@@ -16,8 +16,8 @@ from telethon.tl.types import Message
 # ==============================
 
 API_ID = 34855392
-API_HASH = "YOUR_API_HASH"
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # توکن ربات خود را وارد کنید
+API_HASH = "5e40d435847009c31c24042e2a3c0d3b"
+BOT_TOKEN = "8913398447:AAGE6fOpYsTmGajTjQWSLLlb338aH5WP8H8"  # توکن ربات خود را وارد کنید
 
 # ==============================
 # Device Settings
