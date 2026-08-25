@@ -1,6 +1,7 @@
 import os
 import asyncio
 import re
+import sys
 
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
@@ -36,12 +37,6 @@ PROXY = None
 
 user_sessions = {}  # {user_id: {"step": "waiting_phone", "phone": "..."}, ...}
 user_data = {}      # {user_id: {"session_name": "...", "client": client, ...}}
-
-# ==============================
-# Global Variables
-# ==============================
-
-bot = None  # Will be initialized in main
 
 # ==============================
 # Helper Functions
@@ -158,7 +153,7 @@ async def save_session_and_send(user_id, client, session_name):
 # Bot Handlers
 # ==============================
 
-@bot.on(events.NewMessage(pattern="/start")) if bot else None
+@bot.on(events.NewMessage(pattern="/start"))
 async def start_command(event):
     """Handle /start command"""
     user_id = event.sender_id
@@ -185,7 +180,7 @@ async def start_command(event):
     # Set step
     user_sessions[user_id] = {"step": "waiting_name"}
 
-@bot.on(events.NewMessage(pattern="/cancel")) if bot else None
+@bot.on(events.NewMessage(pattern="/cancel"))
 async def cancel_command(event):
     """Handle /cancel command"""
     user_id = event.sender_id
@@ -204,7 +199,7 @@ async def cancel_command(event):
     
     await event.reply("✅ عملیات کنسل شد. برای شروع مجدد از /start استفاده کنید.")
 
-@bot.on(events.NewMessage) if bot else None
+@bot.on(events.NewMessage)
 async def handle_messages(event):
     """Handle all other messages"""
     if event.is_private:
@@ -362,10 +357,10 @@ async def main():
     print("=" * 50)
     print("Starting bot...")
     
-    # Create bot client inside the main event loop
-    bot = TelegramClient("bot_session", API_ID, API_HASH).start(bot_token=BOT_TOKEN)
+    # Create bot client inside the main event loop - اینجا client ساخته می‌شود
+    bot = TelegramClient("bot_session", API_ID, API_HASH)
     
-    # Register handlers
+    # Register handlers on the bot client - handlerها روی client ثبت می‌شوند
     @bot.on(events.NewMessage(pattern="/start"))
     async def start_command_handler(event):
         await start_command(event)
@@ -379,16 +374,21 @@ async def main():
         await handle_messages(event)
     
     try:
-        await bot.start()
+        # Start the bot with bot_token - اینجا start با await اجرا می‌شود
+        await bot.start(bot_token=BOT_TOKEN)
         print("✅ Bot started successfully!")
         print("Press Ctrl+C to stop")
+        
+        # Keep the bot running
         await bot.run_until_disconnected()
+        
     except KeyboardInterrupt:
         print("\n⚠️ Bot stopped by user")
     except Exception as e:
         print(f"❌ Fatal error: {e}")
         raise
     finally:
+        # Properly disconnect
         if bot and bot.is_connected():
             await bot.disconnect()
             print("✅ Bot disconnected successfully")
@@ -399,6 +399,7 @@ def run():
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n⚠️ Application stopped")
+        sys.exit(0)
     except Exception as e:
         print(f"❌ Critical error: {e}")
         sys.exit(1)
