@@ -4,7 +4,7 @@ import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
 from pyrogram.errors import (
-    PhoneInvalid,
+    PhoneNumberInvalid,
     PhoneCodeInvalid,
     PhoneCodeExpired,
     SessionPasswordNeeded,
@@ -181,7 +181,7 @@ async def handle_phone(client, message, state, phone):
             "⚠️ کد معتبر تا چند دقیقه است."
         )
 
-    except PhoneInvalid:
+    except PhoneNumberInvalid:
         await message.reply_text(
             "❌ **شماره نامعتبر!**\n\n"
             "لطفاً شماره معتبر تلگرام را با فرمت بین‌المللی ارسال کنید."
