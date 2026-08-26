@@ -19,9 +19,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # خواندن متغیرهای محیطی
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+API_ID = int(os.environ.get("34855392
+", 0))
+API_HASH = os.environ.get("5e40d435847009c31c24042e2a3c0d3b", "")
+BOT_TOKEN = os.environ.get("8692323102:AAHVQ5sxZjQk81D8YN5QNItQXMt25vurXqQ", "")
 
 if not API_ID or not API_HASH or not BOT_TOKEN:
     raise ValueError("API_ID, API_HASH و BOT_TOKEN باید در متغیرهای محیطی تنظیم شوند!")
