@@ -1,408 +1,399 @@
 import os
 import asyncio
-import re
-import sys
-
-from telethon import TelegramClient, events
-from telethon.sessions import StringSession
-from telethon.errors import (
-    SessionPasswordNeededError,
-    PhoneCodeInvalidError,
-    PhoneCodeExpiredError,
+import logging
+from pyrogram import Client, filters
+from pyrogram.types import Message
+from pyrogram.errors import (
+    PhoneInvalid, 
+    PhoneCodeInvalid, 
+    PhoneCodeExpired,
+    SessionPasswordNeeded,
+    FloodWait,
+    BadRequest
 )
+from pyrogram.enums import ChatType
+import time
 
-# ==============================
-# Telegram API
-# ==============================
+# تنظیمات لاگینگ
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-API_ID = 34855392
-API_HASH = "5e40d435847009c31c24042e2a3c0d3b"
-BOT_TOKEN = "8913398447:AAGE6fOpYsTmGajTjQWSLLlb338aH5WP8H8"
+# خواندن متغیرهای محیطی
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
-# ==============================
-# Telegram Device Settings
-# ==============================
+if not API_ID or not API_HASH or not BOT_TOKEN:
+    raise ValueError("API_ID, API_HASH و BOT_TOKEN باید در متغیرهای محیطی تنظیم شوند!")
 
-DEVICE_MODEL = "Windows 11"
-SYSTEM_VERSION = "Windows 11"
-APP_VERSION = "Telegram Desktop"
-LANG_CODE = "en"
-SYSTEM_LANG_CODE = "en-US"
+# دیکشنری برای نگهداری وضعیت کاربران
+user_sessions = {}
 
-PROXY = None
-
-# ==============================
-# Temporary Storage
-# ==============================
-
-user_sessions = {}  # {user_id: {"step": "waiting_phone", "phone": "..."}, ...}
-user_data = {}      # {user_id: {"session_name": "...", "client": client, ...}}
-
-# ==============================
-# Helper Functions
-# ==============================
-
-def is_valid_session_name(name):
-    """Check if session name is valid"""
-    if not name:
-        return False
-    return bool(re.match(r'^[\w\-]+$', name))
-
-async def create_telegram_client(session_path, session_name):
-    """Create a new Telegram client"""
-    return TelegramClient(
-        session_path,
-        API_ID,
-        API_HASH,
-        device_model=DEVICE_MODEL,
-        system_version=SYSTEM_VERSION,
-        app_version=APP_VERSION,
-        lang_code=LANG_CODE,
-        system_lang_code=SYSTEM_LANG_CODE,
-        proxy=PROXY
-    )
-
-async def send_code_to_user(user_id, phone, client):
-    """Send login code and save client"""
-    try:
-        await client.send_code_request(phone)
-        user_sessions[user_id] = {
-            "step": "waiting_code",
-            "phone": phone,
-            "client": client
-        }
-        return True, "✅ کد تایید به تلگرام شما ارسال شد. لطفاً کد را وارد کنید:"
-    except Exception as e:
-        return False, f"❌ خطا در ارسال کد: {str(e)}"
-
-async def complete_login(user_id, code=None, password=None):
-    """Complete the login process"""
-    if user_id not in user_sessions:
-        return False, "❌ جلسه شما منقضی شده است. لطفاً دوباره شروع کنید."
-
-    user_info = user_sessions[user_id]
-    client = user_info.get("client")
-    
-    if not client:
-        return False, "❌ خطا در ارتباط با کلاینت"
-
-    try:
-        if password:
-            await client.sign_in(password=password)
-        else:
-            await client.sign_in(phone=user_info["phone"], code=code)
+# کلاس مدیریت وضعیت کاربر
+class UserState:
+    def __init__(self, user_id):
+        self.user_id = user_id
+        self.phone = None
+        self.phone_code_hash = None
+        self.step = "start"  # start, phone, code, password, done, cancelled
+        self.client = None
+        self.session_name = None
+        self.is_2fa = False
+        self.temp_client = None
         
-        return True, "✅ ورود با موفقیت انجام شد!"
-    except SessionPasswordNeededError:
-        return "password_needed", "🔐 تایید دو مرحله‌ای فعال است. لطفاً رمز عبور را وارد کنید:"
-    except PhoneCodeInvalidError:
-        return False, "❌ کد وارد شده نامعتبر است. دوباره تلاش کنید:"
-    except PhoneCodeExpiredError:
-        return False, "❌ کد منقضی شده است. دوباره تلاش کنید:"
-    except Exception as e:
-        return False, f"❌ خطا: {str(e)}"
-
-async def save_session_and_send(user_id, client, session_name):
-    """Save session files and send to user"""
-    try:
-        sessions_dir = os.path.expanduser("~/sessions")
-        os.makedirs(sessions_dir, exist_ok=True)
-
-        session_path = os.path.join(sessions_dir, session_name)
-        session_file = session_path + ".session"
-
-        # Save session
-        await client.log_out()
-        await client.connect()
-        
-        # Create string session
-        string_session = StringSession.save(client.session)
-        
-        if not string_session:
-            return False, "❌ ایجاد String Session ناموفق بود"
-
-        # Save string session to file
-        string_filename = f"{session_name}_string.txt"
-        with open(string_filename, "w", encoding="utf-8") as f:
-            f.write(string_session)
-
-        # Send files to user
-        await client.start(phone=user_sessions[user_id].get("phone"))
-        
-        # Send .session file
-        if os.path.isfile(session_file):
-            await client.send_file(
-                "me",
-                session_file,
-                caption=f"📁 Telegram Session\nName: {session_name}"
-            )
-        
-        # Send string session file
-        await client.send_file(
-            "me",
-            string_filename,
-            caption=f"🔐 Telegram String Session\nName: {session_name}"
-        )
-
-        return True, "✅ فایل‌های سشن با موفقیت به Saved Messages ارسال شدند"
-    
-    except Exception as e:
-        return False, f"❌ خطا در ذخیره‌سازی: {str(e)}"
-
-# ==============================
-# Bot Handlers
-# ==============================
-
-@bot.on(events.NewMessage(pattern="/start"))
-async def start_command(event):
-    """Handle /start command"""
-    user_id = event.sender_id
-    
-    # Clear user data
-    if user_id in user_sessions:
-        del user_sessions[user_id]
-    if user_id in user_data:
-        del user_data[user_id]
-    
-    await event.reply(
-        "🤖 **ربات سازنده سشن تلگرام**\n\n"
-        "این ربات به شما کمک می‌کند تا سشن تلگرام خود را بسازید.\n\n"
-        "📌 **مراحل:**\n"
-        "1️⃣ نام سشن خود را وارد کنید\n"
-        "2️⃣ شماره تلفن خود را وارد کنید\n"
-        "3️⃣ کد تایید دریافتی را وارد کنید\n"
-        "4️⃣ اگر تایید دو مرحله‌ای دارید، رمز عبور را وارد کنید\n\n"
-        "✅ فایل‌های سشن به Saved Messages شما ارسال می‌شوند.\n\n"
-        "لطفاً نام سشن خود را وارد کنید:",
-        parse_mode="markdown"
-    )
-    
-    # Set step
-    user_sessions[user_id] = {"step": "waiting_name"}
-
-@bot.on(events.NewMessage(pattern="/cancel"))
-async def cancel_command(event):
-    """Handle /cancel command"""
-    user_id = event.sender_id
-    
-    if user_id in user_sessions:
-        # Try to disconnect client if exists
-        if "client" in user_sessions[user_id]:
+    def reset(self):
+        self.phone = None
+        self.phone_code_hash = None
+        self.step = "start"
+        if self.client:
             try:
-                await user_sessions[user_id]["client"].disconnect()
+                self.client.stop()
             except:
                 pass
+            self.client = None
+        self.session_name = None
+        self.is_2fa = False
+        self.temp_client = None
+
+# ربات اصلی
+app = Client(
+    "auth_bot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    bot_token=BOT_TOKEN
+)
+
+def get_user_state(user_id):
+    """دریافت یا ایجاد وضعیت برای کاربر"""
+    if user_id not in user_sessions:
+        user_sessions[user_id] = UserState(user_id)
+    return user_sessions[user_id]
+
+@app.on_message(filters.command("start") & filters.private)
+async def start_command(client, message):
+    """دستور شروع - مرحله 1"""
+    user_id = message.from_user.id
+    state = get_user_state(user_id)
+    state.reset()
+    state.step = "phone"
+    
+    await message.reply_text(
+        "🤖 **به ربات ساخت Session خوش آمدید!**\n\n"
+        "📱 لطفاً شماره تلفن اکانت تلگرام خود را ارسال کنید.\n"
+        "مثال: `+989123456789`\n\n"
+        "⚠️ برای لغو فرایند، دستور `/cancel` را ارسال کنید."
+    )
+
+@app.on_message(filters.command("cancel") & filters.private)
+async def cancel_command(client, message):
+    """لغو فرایند - مرحله 7"""
+    user_id = message.from_user.id
+    if user_id in user_sessions:
+        state = user_sessions[user_id]
+        if state.temp_client:
+            try:
+                await state.temp_client.stop()
+            except:
+                pass
+        state.reset()
         del user_sessions[user_id]
     
-    if user_id in user_data:
-        del user_data[user_id]
+    await message.reply_text(
+        "❌ **فرایند لغو شد.**\n\n"
+        "برای شروع مجدد، دستور `/start` را ارسال کنید."
+    )
+
+@app.on_message(filters.text & filters.private & ~filters.command(["start", "cancel"]))
+async def handle_messages(client, message):
+    """مدیریت پیام‌های متنی - مراحل 2 تا 6"""
+    user_id = message.from_user.id
+    text = message.text.strip()
     
-    await event.reply("✅ عملیات کنسل شد. برای شروع مجدد از /start استفاده کنید.")
+    if user_id not in user_sessions:
+        await message.reply_text("لطفاً ابتدا با دستور `/start` شروع کنید.")
+        return
+    
+    state = user_sessions[user_id]
+    
+    try:
+        if state.step == "phone":
+            await handle_phone(client, message, state, text)
+        elif state.step == "code":
+            await handle_code(client, message, state, text)
+        elif state.step == "password":
+            await handle_password(client, message, state, text)
+        else:
+            await message.reply_text("⚠️ وضعیت نامعتبر. لطفاً با `/start` شروع کنید.")
+            state.reset()
+            
+    except Exception as e:
+        logger.error(f"خطا در پردازش پیام از {user_id}: {e}")
+        await message.reply_text(
+            f"❌ خطایی رخ داد: `{str(e)}`\n\n"
+            "لطفاً با `/start` دوباره تلاش کنید."
+        )
+        state.reset()
 
-@bot.on(events.NewMessage)
-async def handle_messages(event):
-    """Handle all other messages"""
-    if event.is_private:
-        user_id = event.sender_id
-        text = event.raw_text.strip()
+async def handle_phone(client, message, state, phone):
+    """مرحله 2: دریافت شماره تلفن"""
+    # اعتبارسنجی شماره
+    if not phone.startswith('+') or not phone[1:].isdigit():
+        await message.reply_text(
+            "❌ **شماره نامعتبر!**\n\n"
+            "لطفاً شماره را با فرمت بین‌المللی ارسال کنید:\n"
+            "مثال: `+989123456789`"
+        )
+        return
+    
+    try:
+        # ایجاد کلاینت موقت برای احراز هویت
+        session_name = f"session_{state.user_id}_{int(time.time())}"
+        state.session_name = session_name
         
-        # Check if user is in session creation process
-        if user_id not in user_sessions:
-            # If not, ask to start
-            await event.reply("لطفاً ابتدا با دستور /start شروع کنید.")
-            return
+        temp_client = Client(
+            session_name,
+            api_id=API_ID,
+            api_hash=API_HASH,
+            in_memory=True  # استفاده از حافظه برای جلوگیری از ذخیره فایل موقت
+        )
+        state.temp_client = temp_client
         
-        step = user_sessions[user_id].get("step")
+        await temp_client.connect()
         
-        # Handle session name
-        if step == "waiting_name":
-            if not is_valid_session_name(text):
-                await event.reply(
-                    "❌ نام سشن نامعتبر است.\n"
-                    "لطفاً فقط از حروف انگلیسی، اعداد، خط تیره و زیرخط استفاده کنید.\n"
-                    "مثال: my_session_01"
-                )
-                return
-            
-            user_sessions[user_id]["session_name"] = text
-            user_sessions[user_id]["step"] = "waiting_phone"
-            
-            await event.reply(
-                f"✅ نام سشن: `{text}`\n\n"
-                "📱 لطفاً شماره تلفن خود را با کد کشور وارد کنید:\n"
-                "مثال: `+989123456789`",
-                parse_mode="markdown"
-            )
+        # ارسال درخواست کد
+        sent_code = await temp_client.send_code(phone)
+        state.phone = phone
+        state.phone_code_hash = sent_code.phone_code_hash
+        state.step = "code"
         
-        # Handle phone number
-        elif step == "waiting_phone":
-            # Validate phone number (basic)
-            phone = re.sub(r'[^0-9+]', '', text)
-            if not phone or len(phone) < 10:
-                await event.reply(
-                    "❌ شماره تلفن نامعتبر است.\n"
-                    "لطفاً شماره را با کد کشور وارد کنید.\n"
-                    "مثال: `+989123456789`",
-                    parse_mode="markdown"
-                )
-                return
-            
-            user_sessions[user_id]["phone"] = phone
-            session_name = user_sessions[user_id]["session_name"]
-            
-            # Create sessions directory
-            sessions_dir = os.path.expanduser("~/sessions")
-            os.makedirs(sessions_dir, exist_ok=True)
-            
-            session_path = os.path.join(sessions_dir, session_name)
-            
-            # Create client
-            client = await create_telegram_client(session_path, session_name)
-            
-            await event.reply("🔄 در حال اتصال به تلگرام...")
-            
-            try:
-                await client.connect()
-                user_sessions[user_id]["client"] = client
-                
-                # Send code
-                success, message = await send_code_to_user(user_id, phone, client)
-                await event.reply(message)
-                
-                if not success:
-                    # If failed, reset step
-                    user_sessions[user_id]["step"] = "waiting_phone"
-                    
-            except Exception as e:
-                await event.reply(f"❌ خطا در اتصال: {str(e)}")
-                user_sessions[user_id]["step"] = "waiting_phone"
+        await message.reply_text(
+            "✅ **کد تأیید ارسال شد!**\n\n"
+            "📨 کد 5 رقمی ارسال‌شده به تلگرام خود را وارد کنید.\n"
+            "کد را به این شکل بفرستید:\n"
+            "`5 5 5 5 5`\n\n"
+            "⚠️ کد معتبر تا چند دقیقه است."
+        )
         
-        # Handle code
-        elif step == "waiting_code":
-            # Try to login with code
-            result = await complete_login(user_id, code=text)
-            
-            if result[0] == "password_needed":
-                user_sessions[user_id]["step"] = "waiting_password"
-                await event.reply(result[1])
-            
-            elif result[0] is True:
-                # Login successful
-                await event.reply("✅ ورود با موفقیت انجام شد!\n🔄 در حال ایجاد سشن...")
-                
-                session_name = user_sessions[user_id]["session_name"]
-                client = user_sessions[user_id]["client"]
-                
-                # Save and send session
-                success, message = await save_session_and_send(user_id, client, session_name)
-                await event.reply(message)
-                
-                # Clear session data
-                if user_id in user_sessions:
-                    del user_sessions[user_id]
-                
-                await event.reply(
-                    "✅ **فرآیند ساخت سشن کامل شد!**\n\n"
-                    "📁 فایل‌های سشن به Saved Messages شما ارسال شدند.\n"
-                    "🔐 برای امنیت بیشتر، فایل‌ها را در جای امن نگهداری کنید.\n\n"
-                    "برای ساخت سشن جدید از /start استفاده کنید.",
-                    parse_mode="markdown"
-                )
-            
-            else:
-                # Code invalid, let user try again
-                await event.reply(result[1])
-        
-        # Handle password
-        elif step == "waiting_password":
-            result = await complete_login(user_id, password=text)
-            
-            if result[0] is True:
-                # Login successful
-                await event.reply("✅ ورود با موفقیت انجام شد!\n🔄 در حال ایجاد سشن...")
-                
-                session_name = user_sessions[user_id]["session_name"]
-                client = user_sessions[user_id]["client"]
-                
-                # Save and send session
-                success, message = await save_session_and_send(user_id, client, session_name)
-                await event.reply(message)
-                
-                # Clear session data
-                if user_id in user_sessions:
-                    del user_sessions[user_id]
-                
-                await event.reply(
-                    "✅ **فرآیند ساخت سشن کامل شد!**\n\n"
-                    "📁 فایل‌های سشن به Saved Messages شما ارسال شدند.\n"
-                    "🔐 برای امنیت بیشتر، فایل‌ها را در جای امن نگهداری کنید.\n\n"
-                    "برای ساخت سشن جدید از /start استفاده کنید.",
-                    parse_mode="markdown"
-                )
-            
-            else:
-                # Password invalid, let user try again
-                await event.reply(result[1])
+    except PhoneInvalid:
+        await message.reply_text(
+            "❌ **شماره نامعتبر!**\n\n"
+            "لطفاً شماره معتبر تلگرام را با فرمت بین‌المللی ارسال کنید."
+        )
+        state.reset()
+    except FloodWait as e:
+        await message.reply_text(
+            f"⏳ **صبر کنید!**\n\n"
+            f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
+        )
+    except Exception as e:
+        logger.error(f"خطا در ارسال کد: {e}")
+        await message.reply_text(
+            f"❌ **خطا در ارسال کد!**\n\n"
+            f"خطا: `{str(e)}`\n"
+            "لطفاً با `/start` دوباره تلاش کنید."
+        )
+        state.reset()
 
-# ==============================
-# Main
-# ==============================
+async def handle_code(client, message, state, code):
+    """مرحله 3 و 4: دریافت و تأیید کد"""
+    # حذف فاصله‌ها از کد
+    code = code.replace(" ", "").strip()
+    
+    if not code.isdigit() or len(code) != 5:
+        await message.reply_text(
+            "❌ **کد نامعتبر!**\n\n"
+            "لطفاً کد 5 رقمی را به این شکل وارد کنید:\n"
+            "`5 5 5 5 5` یا `55555`"
+        )
+        return
+    
+    try:
+        # تأیید کد
+        await state.temp_client.sign_in(
+            state.phone,
+            state.phone_code_hash,
+            code
+        )
+        
+        # اگر به اینجا رسید، ورود موفق بود
+        state.step = "done"
+        
+        # دریافت اطلاعات کاربر
+        me = await state.temp_client.get_me()
+        
+        # ساخت Session String
+        session_string = await state.temp_client.export_session_string()
+        
+        # ذخیره Session در فایل
+        session_file = f"{state.session_name}.session"
+        with open(session_file, "w") as f:
+            f.write(session_string)
+        
+        # ارسال فایل به کاربر - مرحله 10
+        await message.reply_document(
+            document=session_file,
+            caption=f"✅ **ساخت Session با موفقیت انجام شد!**\n\n"
+                   f"👤 کاربر: {me.first_name} (@{me.username if me.username else 'ندارد'})\n"
+                   f"📱 شماره: {state.phone}\n"
+                   f"🆔 آیدی: {me.id}\n\n"
+                   f"🔐 این فایل برای اجرای کد اصلی شما ضروری است."
+        )
+        
+        # مرحله 11: پیام موفقیت
+        await message.reply_text(
+            "🎉 **فرایند با موفقیت کامل شد!**\n\n"
+            "✅ فایل Session ساخته و ارسال شد.\n"
+            "📁 فایل روی سرور نیز ذخیره شده است.\n\n"
+            "💡 برای استفاده از این Session در کد اصلی خود، فایل را در مسیر مناسب قرار دهید."
+        )
+        
+        # پاک کردن فایل موقت پس از ارسال - مرحله 10
+        try:
+            os.remove(session_file)
+        except:
+            pass
+            
+        # بستن کلاینت موقت
+        await state.temp_client.stop()
+        state.reset()
+        
+    except PhoneCodeInvalid:
+        await message.reply_text(
+            "❌ **کد اشتباه است!**\n\n"
+            "لطفاً کد صحیح را وارد کنید.\n"
+            "اگر کد را دریافت نکردید، با `/start` دوباره تلاش کنید."
+        )
+    except PhoneCodeExpired:
+        await message.reply_text(
+            "❌ **کد منقضی شده!**\n\n"
+            "لطفاً با `/start` دوباره تلاش کنید."
+        )
+    except SessionPasswordNeeded:
+        # مرحله 6: نیاز به رمز 2FA
+        state.is_2fa = True
+        state.step = "password"
+        await message.reply_text(
+            "🔐 **احراز هویت دو مرحله‌ای فعال است!**\n\n"
+            "لطفاً رمز عبور دومرحله‌ای خود را وارد کنید."
+        )
+    except FloodWait as e:
+        await message.reply_text(
+            f"⏳ **صبر کنید!**\n\n"
+            f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
+        )
+    except Exception as e:
+        logger.error(f"خطا در تأیید کد: {e}")
+        await message.reply_text(
+            f"❌ **خطا در تأیید کد!**\n\n"
+            f"خطا: `{str(e)}`\n"
+            "لطفاً با `/start` دوباره تلاش کنید."
+        )
+        state.reset()
+
+async def handle_password(client, message, state, password):
+    """مرحله 6: دریافت رمز 2FA"""
+    try:
+        # تأیید رمز 2FA
+        await state.temp_client.check_password(password)
+        
+        # ورود موفق
+        state.step = "done"
+        
+        # دریافت اطلاعات کاربر
+        me = await state.temp_client.get_me()
+        
+        # ساخت Session String
+        session_string = await state.temp_client.export_session_string()
+        
+        # ذخیره Session در فایل
+        session_file = f"{state.session_name}.session"
+        with open(session_file, "w") as f:
+            f.write(session_string)
+        
+        # ارسال فایل به کاربر
+        await message.reply_document(
+            document=session_file,
+            caption=f"✅ **ساخت Session با موفقیت انجام شد!**\n\n"
+                   f"👤 کاربر: {me.first_name} (@{me.username if me.username else 'ندارد'})\n"
+                   f"📱 شماره: {state.phone}\n"
+                   f"🆔 آیدی: {me.id}\n\n"
+                   f"🔐 این فایل برای اجرای کد اصلی شما ضروری است."
+        )
+        
+        # پیام موفقیت
+        await message.reply_text(
+            "🎉 **فرایند با موفقیت کامل شد!**\n\n"
+            "✅ فایل Session ساخته و ارسال شد.\n"
+            "📁 فایل روی سرور نیز ذخیره شده است."
+        )
+        
+        # پاک کردن فایل موقت
+        try:
+            os.remove(session_file)
+        except:
+            pass
+            
+        # بستن کلاینت موقت
+        await state.temp_client.stop()
+        state.reset()
+        
+    except BadRequest:
+        await message.reply_text(
+            "❌ **رمز عبور اشتباه است!**\n\n"
+            "لطفاً رمز صحیح را وارد کنید."
+        )
+    except FloodWait as e:
+        await message.reply_text(
+            f"⏳ **صبر کنید!**\n\n"
+            f"لطفاً {e.value} ثانیه صبر کنید و دوباره تلاش کنید."
+        )
+    except Exception as e:
+        logger.error(f"خطا در تأیید رمز 2FA: {e}")
+        await message.reply_text(
+            f"❌ **خطا در تأیید رمز!**\n\n"
+            f"خطا: `{str(e)}`\n"
+            "لطفاً با `/start` دوباره تلاش کنید."
+        )
+        state.reset()
+
+@app.on_message(filters.command("help") & filters.private)
+async def help_command(client, message):
+    """دستور راهنما"""
+    await message.reply_text(
+        "🤖 **راهنمای ربات ساخت Session**\n\n"
+        "🔹 `/start` - شروع فرایند ساخت Session\n"
+        "🔹 `/cancel` - لغو فرایند جاری\n"
+        "🔹 `/help` - نمایش این راهنما\n\n"
+        "📌 **مراحل:**\n"
+        "1️⃣ شماره تلفن خود را ارسال کنید\n"
+        "2️⃣ کد تأیید ارسال‌شده به تلگرام را وارد کنید\n"
+        "3️⃣ در صورت نیاز، رمز 2FA را وارد کنید\n"
+        "4️⃣ فایل Session ساخته و برای شما ارسال می‌شود\n\n"
+        "⚠️ **توجه:** فایل Session به شما امکان دسترسی به حساب تلگرام را می‌دهد. آن را با کسی به اشتراک نگذارید."
+    )
 
 async def main():
-    """Main entry point with proper event loop management"""
-    global bot
-    
-    print("=" * 50)
-    print("       TELEGRAM SESSION MAKER BOT")
-    print("=" * 50)
-    print("Starting bot...")
-    
-    # Create bot client inside the main event loop - اینجا client ساخته می‌شود
-    bot = TelegramClient("bot_session", API_ID, API_HASH)
-    
-    # Register handlers on the bot client - handlerها روی client ثبت می‌شوند
-    @bot.on(events.NewMessage(pattern="/start"))
-    async def start_command_handler(event):
-        await start_command(event)
-    
-    @bot.on(events.NewMessage(pattern="/cancel"))
-    async def cancel_command_handler(event):
-        await cancel_command(event)
-    
-    @bot.on(events.NewMessage)
-    async def messages_handler(event):
-        await handle_messages(event)
-    
+    """تابع اصلی اجرا"""
     try:
-        # Start the bot with bot_token - اینجا start با await اجرا می‌شود
-        await bot.start(bot_token=BOT_TOKEN)
-        print("✅ Bot started successfully!")
-        print("Press Ctrl+C to stop")
-        
-        # Keep the bot running
-        await bot.run_until_disconnected()
-        
+        logger.info("ربات در حال اجرا...")
+        await app.start()
+        logger.info("ربات با موفقیت شروع به کار کرد!")
+        await asyncio.Event().wait()  # منتظر ماندن برای همیشه
     except KeyboardInterrupt:
-        print("\n⚠️ Bot stopped by user")
+        logger.info("ربات متوقف شد.")
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
-        raise
+        logger.error(f"خطا در اجرای ربات: {e}")
     finally:
-        # Properly disconnect
-        if bot and bot.is_connected():
-            await bot.disconnect()
-            print("✅ Bot disconnected successfully")
-
-def run():
-    """Entry point for the script"""
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n⚠️ Application stopped")
-        sys.exit(0)
-    except Exception as e:
-        print(f"❌ Critical error: {e}")
-        sys.exit(1)
+        # پاکسازی منابع
+        for user_id, state in list(user_sessions.items()):
+            try:
+                if state.temp_client:
+                    await state.temp_client.stop()
+                state.reset()
+            except:
+                pass
+        user_sessions.clear()
+        await app.stop()
 
 if __name__ == "__main__":
-    run()
+    asyncio.run(main())
