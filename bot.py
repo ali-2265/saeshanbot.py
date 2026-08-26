@@ -18,20 +18,26 @@ import time
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# خواندن متغیرهای محیطی
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-
-# بررسی وجود متغیرهای محیطی
-if not API_ID:
+# خواندن متغیرهای محیطی - روش صحیح
+try:
+    API_ID = int(os.environ["API_ID"])
+    logger.info(f"✅ API_ID با موفقیت خوانده شد: {API_ID}")
+except KeyError:
     raise ValueError("❌ API_ID در متغیرهای محیطی تنظیم نشده است!")
-if not API_HASH:
-    raise ValueError("❌ API_HASH در متغیرهای محیطی تنظیم نشده است!")
-if not BOT_TOKEN:
-    raise ValueError("❌ BOT_TOKEN در متغیرهای محیطی تنظیم نشده است!")
+except ValueError:
+    raise ValueError("❌ API_ID باید یک عدد صحیح باشد!")
 
-logger.info(f"✅ متغیرهای محیطی با موفقیت بارگذاری شدند (API_ID: {API_ID})")
+try:
+    API_HASH = os.environ["API_HASH"]
+    logger.info(f"✅ API_HASH با موفقیت خوانده شد (طول: {len(API_HASH)})")
+except KeyError:
+    raise ValueError("❌ API_HASH در متغیرهای محیطی تنظیم نشده است!")
+
+try:
+    BOT_TOKEN = os.environ["BOT_TOKEN"]
+    logger.info(f"✅ BOT_TOKEN با موفقیت خوانده شد (طول: {len(BOT_TOKEN)})")
+except KeyError:
+    raise ValueError("❌ BOT_TOKEN در متغیرهای محیطی تنظیم نشده است!")
 
 # دیکشنری برای نگهداری وضعیت کاربران
 user_sessions = {}
