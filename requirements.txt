@@ -1,1 +1,15 @@
-telethon
+# Pyrogram - کتابخانه اصلی برای ارتباط با Telegram API
+pyrogram==2.0.106
+
+# tgcrypto - مورد نیاز برای رمزنگاری در Pyrogram
+tgcrypto==1.2.5
+
+# asyncio - برای مدیریت عملیات ناهمزمان
+asyncio==3.4.3
+
+# Telethon - در صورت نیاز بخش‌های دیگر پروژه
+telethon==1.36.0
+
+# سایر dependencyهای احتمالی
+aiohttp==3.9.1
+pysocks==1.7.1
