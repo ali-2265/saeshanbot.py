@@ -3,9 +3,9 @@ import asyncio
 from telethon import TelegramClient, events
 from telethon.tl.types import Message
 
-API_ID = YOUR_API_ID  # عدد API ID خود را وارد کنید
-API_HASH = "YOUR_API_HASH"  # API Hash خود را وارد کنید
-BOT_TOKEN = "YOUR_BOT_TOKEN"  # توکن ربات خود را اینجا وارد کنید
+API_ID = 34855392  # عدد API ID خود را وارد کنید
+API_HASH = "5e40d435847009c31c24042e2a3c0d3b"  # API Hash خود را وارد کنید
+BOT_TOKEN = "8692323102:AAHVQ5sxZjQk81D8YN5QNItQXMt25vurXqQ"  # توکن ربات خود را اینجا وارد کنید
 
 # دیکشنری برای ذخیره وضعیت کاربران
 user_sessions = {}
