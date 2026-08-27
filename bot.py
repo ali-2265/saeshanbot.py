@@ -1,20 +1,26 @@
 import os
-import asyncio
 import sys
+import asyncio
 from telethon import TelegramClient, events
-from telethon.tl.types import Message
 from telethon.errors import SessionPasswordNeededError
 
 # ==================== تنظیمات اولیه ====================
-API_ID = int(os.environ.get("API_ID", 0))
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+# تنظیم مستقیم مقادیر
+API_ID = 34855392
+API_HASH = "5e40d435847009c31c24042e2a3c0d3b"
+BOT_TOKEN = "8692323102:AAHVQ5sxZjQk81D8YN5QNItQXMt25vurXqQ"
 
-# بررسی وجود توکن
-if not BOT_TOKEN or not API_ID or not API_HASH:
-    print("❌ ERROR: Missing environment variables!")
-    print("Please set API_ID, API_HASH, and BOT_TOKEN")
+# بررسی وجود مقادیر
+if not API_ID or not API_HASH or not BOT_TOKEN:
+    print("❌ ERROR: Missing required values!")
+    print(f"API_ID: {'✓' if API_ID else '✗'}")
+    print(f"API_HASH: {'✓' if API_HASH else '✗'}")
+    print(f"BOT_TOKEN: {'✓' if BOT_TOKEN else '✗'}")
     sys.exit(1)
+
+print(f"✅ API_ID: {API_ID}")
+print(f"✅ API_HASH: {API_HASH[:10]}...")
+print(f"✅ BOT_TOKEN: {BOT_TOKEN[:10]}...")
 
 # دیکشنری برای ذخیره وضعیت کاربران
 user_sessions = {}
@@ -22,7 +28,6 @@ user_sessions = {}
 # ==================== بخش HTTP Server ====================
 try:
     from aiohttp import web
-    import socket
     
     async def health_check(request):
         """Endpoint ساده برای بررسی سلامت ربات"""
@@ -46,7 +51,7 @@ try:
         
         # نگه داشتن سرور تا زمانی که ربات فعال است
         while True:
-            await asyncio.sleep(3600)  # sleep برای 1 ساعت
+            await asyncio.sleep(3600)
     
 except ImportError:
     print("⚠️ aiohttp not installed. Web server disabled.")
@@ -403,7 +408,7 @@ async def main():
         # شروع سرور وب
         web_task = asyncio.create_task(run_web_server())
         
-        # منتظر ماندن تا اولین تسک تمام شود (معمولاً هیچکدام تمام نمی‌شوند)
+        # منتظر ماندن تا اولین تسک تمام شود
         done, pending = await asyncio.wait(
             [bot_task, web_task],
             return_when=asyncio.FIRST_COMPLETED
