@@ -64,29 +64,68 @@ class SessionBot:
         )
         self.temp_clients = {}
 
-    def validate_code_format(self, code):
+    def validate_and_clean_code(self, raw_code):
         """
-        بررسی فرمت کد:
-        - فقط باید شامل اعداد باشد
-        - بدون فاصله، نقطه یا هر کاراکتر دیگر
+        بررسی و پاکسازی کد:
+        - فرمت مجاز: 1 2 3 4 5 یا 1.2.3.4.5
+        - تبدیل به: 12345
+        - برگرداندن: (is_valid, cleaned_code, error_message)
         """
-        # اگر خالی باشد
-        if not code:
-            return False, "کد نمی‌تواند خالی باشد."
+        # اگر کد خالی باشد
+        if not raw_code or raw_code.strip() == '':
+            return False, None, "❌ کد نمی‌تواند خالی باشد."
         
-        # اگر شامل فاصله باشد
-        if ' ' in code:
-            return False, "❌ فرمت کد صحیح نیست. لطفاً کد را بدون فاصله ارسال کنید."
+        raw_code = raw_code.strip()
         
-        # اگر شامل نقطه باشد
-        if '.' in code:
-            return False, "❌ فرمت کد صحیح نیست. لطفاً کد را بدون نقطه ارسال کنید."
+        # بررسی فرمت با فاصله: 1 2 3 4 5
+        if ' ' in raw_code:
+            # بررسی اینکه فقط شامل اعداد و فاصله باشد
+            parts = raw_code.split(' ')
+            # حذف فاصله‌های اضافی
+            parts = [p for p in parts if p != '']
+            
+            # بررسی اینکه همه بخش‌ها عدد باشند
+            if not all(p.isdigit() for p in parts):
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
+            
+            # ترکیب اعداد بدون فاصله
+            cleaned = ''.join(parts)
+            
+            # بررسی اینکه حداقل یک عدد وجود داشته باشد
+            if not cleaned:
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
+            
+            return True, cleaned, None
         
-        # اگر شامل کاراکتر غیرعددی باشد
-        if not code.isdigit():
-            return False, "❌ فرمت کد صحیح نیست. لطفاً فقط از اعداد استفاده کنید."
+        # بررسی فرمت با نقطه: 1.2.3.4.5
+        elif '.' in raw_code:
+            # بررسی اینکه فقط شامل اعداد و نقطه باشد
+            parts = raw_code.split('.')
+            # حذف نقطه‌های اضافی
+            parts = [p for p in parts if p != '']
+            
+            # بررسی اینکه همه بخش‌ها عدد باشند
+            if not all(p.isdigit() for p in parts):
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
+            
+            # ترکیب اعداد بدون نقطه
+            cleaned = ''.join(parts)
+            
+            # بررسی اینکه حداقل یک عدد وجود داشته باشد
+            if not cleaned:
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
+            
+            return True, cleaned, None
         
-        return True, code
+        # فرمت غیرمجاز (مثل 12345 یا شامل کاراکترهای دیگر)
+        else:
+            # بررسی اینکه آیا فقط اعداد است یا کاراکترهای دیگر دارد
+            if raw_code.isdigit():
+                # این فرمت 12345 است که غیرمجاز است
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
+            else:
+                # شامل کاراکترهای غیرمجاز
+                return False, None, "❌ فرمت کد صحیح نیست. لطفاً کد را به شکل 1 2 3 4 5 یا 1.2.3.4.5 ارسال کنید."
 
     async def start(self):
         await self.bot.start(bot_token=BOT_TOKEN)
@@ -118,7 +157,8 @@ class SessionBot:
                 'step': 'phone',  # phone, code, 2fa
                 'phone': None,
                 'phone_code_hash': None,
-                'code': '',  # کد پاکسازی شده
+                'code': '',
+                'is_waiting_for_code': False  # وضعیت انتظار برای کد
             }
             
             await event.respond(
@@ -155,14 +195,14 @@ class SessionBot:
                                 user_data['phone'] = phone
                                 user_data['step'] = 'code'
                                 user_data['phone_code_hash'] = send_result.phone_code_hash
+                                user_data['is_waiting_for_code'] = True
                                 
                                 await event.respond(
                                     "✅ کد تأیید به شماره شما ارسال شد.\n\n"
-                                    "📝 لطفاً کد احراز هویت را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
-                                    "مثال صحیح: `12345`\n\n"
-                                    "⚠️ فرمت‌های زیر **غیرمجاز** هستند:\n"
-                                    "• `1 2 3 4 5` (با فاصله)\n"
-                                    "• `1.2.3.4.5` (با نقطه)"
+                                    "📝 لطفاً کد احراز هویت را به یکی از این دو شکل ارسال کنید:\n"
+                                    "• با فاصله: `1 2 3 4 5`\n"
+                                    "• با نقطه: `1.2.3.4.5`\n\n"
+                                    "⚠️ فرمت `12345` **غیرمجاز** است!"
                                 )
                                 
                             except Exception as e:
@@ -171,23 +211,32 @@ class SessionBot:
                             await event.respond("⚠️ این شماره قبلاً تأیید شده است!")
                     
                     elif step == 'code':
-                        # دریافت کد احراز هویت
-                        raw_code = event.text.strip()
-                        
-                        # بررسی فرمت کد
-                        is_valid, message = self.validate_code_format(raw_code)
-                        
-                        if not is_valid:
-                            # نمایش خطا و راهنمایی مجدد
+                        # بررسی اینکه کاربر در مرحله دریافت کد است
+                        if not user_data.get('is_waiting_for_code', False):
                             await event.respond(
-                                f"{message}\n\n"
-                                "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
-                                "مثال صحیح: `12345`"
+                                "⚠️ شما در مرحله دریافت کد نیستید.\n"
+                                "لطفاً /start را بزنید و دوباره تلاش کنید."
                             )
                             return
                         
-                        # کد معتبر است
-                        user_data['code'] = raw_code  # ذخیره به صورت string
+                        # دریافت کد از کاربر
+                        raw_code = event.text.strip()
+                        
+                        # بررسی و پاکسازی کد
+                        is_valid, cleaned_code, error_message = self.validate_and_clean_code(raw_code)
+                        
+                        if not is_valid:
+                            # نمایش خطا و راهنمایی مجدد - کاربر در همان مرحله می‌ماند
+                            await event.respond(
+                                f"{error_message}\n\n"
+                                "📝 لطفاً کد را به یکی از این دو شکل ارسال کنید:\n"
+                                "• با فاصله: `1 2 3 4 5`\n"
+                                "• با نقطه: `1.2.3.4.5`"
+                            )
+                            return
+                        
+                        # کد معتبر است - ذخیره کد پاکسازی شده
+                        user_data['code'] = cleaned_code
                         
                         # تأیید کد
                         await self.verify_code(event, user_data)
@@ -196,7 +245,6 @@ class SessionBot:
                         # دریافت رمز 2FA
                         raw_password = event.text.strip()
                         
-                        # بررسی فرمت رمز (می‌تواند شامل حروف و اعداد باشد)
                         if not raw_password:
                             await event.respond(
                                 "❌ رمز عبور نمی‌تواند خالی باشد.\n"
@@ -217,13 +265,11 @@ class SessionBot:
                     else:
                         await event.respond(f"❌ خطای غیرمنتظره: {error_msg}")
 
-        await self.bot.run_until_disconnected()
-
     async def verify_code(self, event, user_data):
         """
         تأیید کد ورود با استفاده از روش صحیح Telethon
         """
-        code = user_data['code']  # string
+        code = user_data['code']  # string - پاکسازی شده
         phone = user_data['phone']
         client = user_data['client']
         phone_code_hash = user_data.get('phone_code_hash')
@@ -235,33 +281,46 @@ class SessionBot:
             else:
                 await client.sign_in(phone, code)
             
-            # موفقیت
+            # موفقیت - کاربر از مرحله احراز هویت خارج می‌شود
             await self.handle_successful_login(event, user_data)
                 
         except SessionPasswordNeededError:
-            # نیاز به رمز 2FA
+            # نیاز به رمز 2FA - کاربر به مرحله 2FA می‌رود
             user_data['step'] = '2fa'
+            user_data['is_waiting_for_code'] = True
             await event.respond(
                 "🔐 این حساب دارای رمز عبور دو مرحله‌ای است.\n\n"
                 "لطفاً رمز عبور خود را وارد کنید:"
             )
             
         except PhoneCodeInvalidError:
-            # کد اشتباه
+            # کد اشتباه - کاربر در همان مرحله می‌ماند
             user_data['code'] = ''
             await event.respond(
                 "❌ کد وارد شده اشتباه است!\n\n"
-                "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
-                "مثال صحیح: `12345`"
+                "📝 لطفاً کد را به یکی از این دو شکل ارسال کنید:\n"
+                "• با فاصله: `1 2 3 4 5`\n"
+                "• با نقطه: `1.2.3.4.5`"
             )
             
         except PhoneCodeExpiredError:
-            # کد منقضی شده
-            await event.respond(
-                "❌ کد منقضی شده است.\n\n"
-                "لطفاً دوباره /start را بزنید و شماره خود را مجدداً وارد کنید."
-            )
-            del self.temp_clients[event.sender_id]
+            # کد منقضی شده - تلاش برای ارسال کد جدید
+            try:
+                # ارسال مجدد کد
+                phone = user_data['phone']
+                send_result = await client.send_code_request(phone)
+                user_data['phone_code_hash'] = send_result.phone_code_hash
+                user_data['code'] = ''
+                
+                await event.respond(
+                    "🔄 کد قبلی منقضی شده بود.\n"
+                    "✅ کد جدید به شماره شما ارسال شد.\n\n"
+                    "📝 لطفاً کد را به یکی از این دو شکل ارسال کنید:\n"
+                    "• با فاصله: `1 2 3 4 5`\n"
+                    "• با نقطه: `1.2.3.4.5`"
+                )
+            except Exception as e:
+                await event.respond(f"❌ خطا در ارسال کد جدید: {str(e)}")
             
         except Exception as e:
             error_msg = str(e)
@@ -270,8 +329,9 @@ class SessionBot:
                 user_data['code'] = ''
                 await event.respond(
                     "❌ کد وارد شده اشتباه است!\n\n"
-                    "📝 لطفاً کد را **بدون فاصله** و **بدون نقطه** ارسال کنید.\n"
-                    "مثال صحیح: `12345`"
+                    "📝 لطفاً کد را به یکی از این دو شکل ارسال کنید:\n"
+                    "• با فاصله: `1 2 3 4 5`\n"
+                    "• با نقطه: `1.2.3.4.5`"
                 )
             elif "FLOOD" in error_msg:
                 await event.respond("❌ تعداد درخواست‌ها زیاد است. چند دقیقه صبر کنید.")
@@ -289,13 +349,14 @@ class SessionBot:
             # روش صحیح تأیید رمز 2FA در Telethon
             await client.sign_in(password=password)
             
-            # موفقیت
+            # موفقیت - کاربر از مرحله احراز هویت خارج می‌شود
             await self.handle_successful_login(event, user_data)
                 
         except Exception as e:
             error_msg = str(e)
             if "PASSWORD_HASH_INVALID" in error_msg or "SRP_ID_INVALID" in error_msg:
                 user_data['code'] = ''
+                # کاربر در مرحله 2FA می‌ماند
                 await event.respond(
                     "❌ رمز عبور اشتباه است!\n\n"
                     "لطفاً رمز عبور دو مرحله‌ای خود را مجدداً وارد کنید:"
